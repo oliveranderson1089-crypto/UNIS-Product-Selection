@@ -65,6 +65,7 @@ class CrawlerConfig:
     skip_keywords: list[str]
     delay_seconds: float = 1.5
     user_agent: str = "UNIS-Product-Selection/0.1"
+    verify_ssl: bool = True
 
 
 @dataclass
@@ -166,6 +167,14 @@ def _build(raw: dict[str, Any]) -> AppConfig:
     )
 
     c = raw["crawler"]
+    # Env var CRAWLER_VERIFY_SSL=false overrides the YAML default so users
+    # behind TLS-intercepting proxies can switch without editing files.
+    verify_ssl_env = os.getenv("CRAWLER_VERIFY_SSL")
+    verify_ssl = (
+        verify_ssl_env.lower() not in ("0", "false", "no")
+        if verify_ssl_env is not None
+        else bool(c.get("verify_ssl", True))
+    )
     crawler = CrawlerConfig(
         base_url=c["base_url"],
         start_paths=c.get("start_paths", []),
@@ -175,6 +184,7 @@ def _build(raw: dict[str, Any]) -> AppConfig:
         skip_keywords=c.get("skip_keywords", []),
         delay_seconds=float(os.getenv("CRAWLER_DELAY", "1.5")),
         user_agent=os.getenv("CRAWLER_USER_AGENT", "UNIS-Product-Selection/0.1"),
+        verify_ssl=verify_ssl,
     )
 
     sel = raw["selector"]

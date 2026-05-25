@@ -32,8 +32,11 @@ from .pdf_downloader import PDFDownloader
 logger = logging.getLogger(__name__)
 
 # Regex matching the canonical product URL shape:
-# /<Category>/<NumericId>/<ModelSlug>/<NumericId>.html
-PRODUCT_URL_RE = re.compile(r"/[A-Za-z_]+/\d+/[^/]+/\d+\.html$")
+#   /<Category>/<NumericId>/<ModelSlug>/<NumericId>.html
+# Slug MUST contain at least one letter, so we don't accidentally match
+# support-tree URLs like /Service_Support/32/322/119.html where the "slug"
+# is purely numeric.
+PRODUCT_URL_RE = re.compile(r"/[A-Za-z_]+/\d+/(?=[^/]*[A-Za-z])[^/]+/\d+\.html$")
 
 # Brochure links commonly contain 彩页 / brochure / .pdf
 BROCHURE_HINT_RE = re.compile(r"(彩页|brochure|datasheet|规格书|参数手册|说明书)", re.I)
@@ -81,14 +84,22 @@ class UnisCrawler:
         self.client.close()
 
     # ---- public API ---------------------------------------------------------
-    def run(self) -> dict[str, int]:
+    def run(self, *, max_products: int | None = None) -> dict[str, int]:
         """
         Discover products and persist drafts + PDFs.
+
+        Args:
+            max_products: hard cap on how many product pages to scrape this
+              run. Useful for incremental smoke-tests against a live site
+              without committing to a full crawl. None = no cap.
 
         Returns counters useful for logging / dashboards.
         """
         product_urls = list(self._discover_product_urls())
         logger.info("Discovered %d product pages.", len(product_urls))
+        if max_products is not None:
+            product_urls = product_urls[:max_products]
+            logger.info("Capped to first %d for this run.", max_products)
 
         new_count = 0
         pdf_count = 0
@@ -178,34 +189,87 @@ class UnisCrawler:
         return draft
 
     # ---- HTML field extractors (isolate site-specific selectors) ----------
+    # All selectors target the unisyue.com product-page DOM observed during
+    # probing. If the site redesigns, fix them HERE — the rest of the
+    # crawler is structure-agnostic.
+
     @staticmethod
     def _extract_model(soup: BeautifulSoup, url: str) -> str | None:
-        # 1) prefer the URL slug — it's the canonical product code on UNIS site.
+        """
+        Prefer the canonical URL slug; the site's HTML often shows multiple
+        product names (related-products carousel etc.) which would mislead a
+        title-based heuristic.
+        """
         m = re.search(r"/([A-Z0-9][A-Z0-9\-_]+)/\d+\.html$", url)
         if m:
             return m.group(1).replace("UNISS", "UNIS S").replace("UNIS_", "UNIS ").strip()
-        # 2) fallback: <h1> / <title>
-        for sel in ("h1", "h2", "title"):
-            el = soup.find(sel)
-            if el and el.get_text(strip=True):
-                return el.get_text(strip=True)
-        return None
+        # Fallback: the in-DOM main product h1 (see _extract_title scoping).
+        return UnisCrawler._extract_title(soup, url)
 
     @staticmethod
-    def _extract_title(soup: BeautifulSoup) -> str | None:
-        h1 = soup.find("h1")
-        if h1:
-            return h1.get_text(strip=True)
+    def _extract_title(soup: BeautifulSoup, url: str | None = None) -> str | None:
+        """
+        Real product name. The page often has several <h1>s (related-products
+        carousel, banners…), so:
+          1) Prefer the h1 scoped to the product hero (`section.product-images`).
+          2) Otherwise <title>, stripped of the trailing site-name + category
+             chain. The title format observed is
+                "<product-full-name>-<category>-<section>-紫光恒越"
+             and product names contain "-" (e.g. S12600-CR-G), so a naive
+             split on "-" is wrong — we strip the brand and category suffix
+             instead.
+          3) Last resort: the first <h1> in the document.
+        """
+        scoped = soup.select_one("section.product-images h1") \
+            or soup.select_one(".product-images h1") \
+            or soup.select_one(".product-info-details h1")
+        if scoped and scoped.get_text(strip=True):
+            return scoped.get_text(strip=True)
+
         t = soup.find("title")
-        return t.get_text(strip=True) if t else None
+        if t and t.get_text(strip=True):
+            text = t.get_text(strip=True)
+            # Strip the brand suffix.
+            text = re.sub(r"-\s*紫光[^-]*$", "", text)
+            # Strip any remaining trailing "-<Chinese-only-token>" segments
+            # (category/section like "交换机", "创新产品"). Product names
+            # always contain digits or Latin chars, so segments that are
+            # short and pure-Chinese are safe to drop.
+            while True:
+                m = re.search(r"-\s*([一-鿿]{2,8})\s*$", text)
+                if not m:
+                    break
+                text = text[: m.start()].rstrip(" -")
+            return text.strip() or None
+
+        h1 = soup.find("h1")
+        return h1.get_text(strip=True) if h1 else None
 
     @staticmethod
     def _extract_description(soup: BeautifulSoup) -> str | None:
-        # First substantial <p> as a description.
+        """
+        Product description lives in the first .product-detail-content
+        (tab "产品概述"). Concatenate its <p> children so we get a full
+        intro rather than just a one-liner.
+        """
+        block = soup.select_one("section.product-info-details .product-detail-content") \
+            or soup.select_one(".product-detail-content")
+        if block:
+            paragraphs = [
+                p.get_text(" ", strip=True)
+                for p in block.find_all("p")
+                if p.get_text(strip=True)
+            ]
+            text = " ".join(paragraphs).strip()
+            if text:
+                return text[:2048]
+
+        # Fallback: first long <p> anywhere — may be wrong if the page has
+        # related-products cards above the real content, but better than nothing.
         for p in soup.find_all("p"):
             text = p.get_text(" ", strip=True)
             if len(text) > 40:
-                return text[:1024]
+                return text[:2048]
         return None
 
     @staticmethod
@@ -215,9 +279,34 @@ class UnisCrawler:
 
     @staticmethod
     def _infer_category(url: str, soup: BeautifulSoup) -> str | None:
-        """Map a URL path segment / breadcrumb to our Category vocabulary."""
+        """
+        Determine the product category. Priority:
+
+          1) Breadcrumb's second-to-last link — e.g.
+             "首页 > 创新产品 > 交换机 > <product>"  →  "交换机".
+             Reliable because the site itself produced this label.
+          2) Frequency-weighted keyword search — a fallback that takes the
+             category most-mentioned in body text. First-match was too noisy
+             (server pages mention "交换机" in navigation, etc.).
+        """
+        known = {"交换机", "路由器", "服务器", "存储", "防火墙", "无线", "云平台"}
+
+        # ---- 1) breadcrumb ----
+        crumb = soup.find(class_=lambda c: c and "crumb" in c.lower()) \
+            or soup.find("nav") \
+            or soup.find(class_=lambda c: c and "breadcrumb" in c.lower())
+        if crumb:
+            links = [a.get_text(strip=True) for a in crumb.find_all("a")
+                     if a.get_text(strip=True)]
+            # Last <a> is usually the product itself; the one before it is
+            # the leaf category. Walk backward over the parent levels.
+            for token in reversed(links[:-1]):
+                if token in known:
+                    return token
+
+        # ---- 2) frequency-weighted keyword fallback ----
         text = (soup.get_text(" ", strip=True) + " " + url).lower()
-        rules = [
+        rules: list[tuple[str, tuple[str, ...]]] = [
             ("交换机", ("交换机", "switch", "switching")),
             ("路由器", ("路由器", "router")),
             ("服务器", ("服务器", "server")),
@@ -225,24 +314,33 @@ class UnisCrawler:
             ("防火墙", ("防火墙", "firewall")),
             ("无线",   ("无线", "wifi", "wlan", "ap控制器")),
         ]
-        for cat, kws in rules:
-            if any(k in text for k in kws):
-                return cat
-        return None
+        scores = {cat: sum(text.count(kw) for kw in kws) for cat, kws in rules}
+        best = max(scores.items(), key=lambda kv: kv[1])
+        return best[0] if best[1] > 0 else None
 
     @staticmethod
     def _extract_pdf_links(soup: BeautifulSoup, base: str) -> Iterable[tuple[str, str]]:
+        """
+        Collect all PDF links, then prefer the real brochure (彩页) when one
+        exists. UNIS product pages typically attach 5–10 PDFs (user manual,
+        install guide, optical-module table…); only the 彩页 is the spec
+        sheet we want to parse for selection. Falling back to all PDFs keeps
+        us robust against pages that name their brochure differently.
+        """
+        all_pdfs: list[tuple[str, str]] = []
+        brochures: list[tuple[str, str]] = []
         for a in soup.find_all("a", href=True):
             href = a["href"].strip()
             if not href.lower().endswith(".pdf"):
                 continue
             absolute = urljoin(base, href)
             title = a.get_text(" ", strip=True) or href.rsplit("/", 1)[-1]
-            # Prefer obvious brochure links; still emit others as backups.
-            if BROCHURE_HINT_RE.search(title) or BROCHURE_HINT_RE.search(href):
-                yield (title, absolute)
-            else:
-                yield (title, absolute)
+            entry = (title, absolute)
+            all_pdfs.append(entry)
+            if BROCHURE_HINT_RE.search(title) or BROCHURE_HINT_RE.search(absolute):
+                brochures.append(entry)
+
+        yield from (brochures if brochures else all_pdfs)
 
     # ---- low-level helper ---------------------------------------------------
     def _safe_get_html(self, url: str) -> str | None:

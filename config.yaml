@@ -56,6 +56,10 @@ crawler:
     - /Autonomous_Controllable/11/
   request_timeout: 30
   retries: 3
+  # TLS verification. Set false ONLY if you're behind a proxy that does
+  # TLS interception (FlClash / corporate firewall) and you trust it.
+  # The env var CRAWLER_VERIFY_SSL=false overrides this at runtime.
+  verify_ssl: true
   # Categories to keep when discovering products. Empty = all.
   category_whitelist:
     - 交换机

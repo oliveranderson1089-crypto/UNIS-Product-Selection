@@ -33,11 +33,18 @@ class PoliteClient:
         self._delay = cfg.crawler.delay_seconds
         self._timeout = cfg.crawler.request_timeout
         self._last_request = 0.0
+        if not cfg.crawler.verify_ssl:
+            logger.warning(
+                "TLS verification DISABLED for crawler (config.crawler.verify_ssl=false "
+                "or CRAWLER_VERIFY_SSL=false). Acceptable behind a trusted TLS-intercepting "
+                "proxy; otherwise re-enable to prevent MITM."
+            )
         self._client = httpx.Client(
             headers={"User-Agent": cfg.crawler.user_agent,
                      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7"},
             timeout=self._timeout,
             follow_redirects=True,
+            verify=cfg.crawler.verify_ssl,
         )
 
     def close(self) -> None:

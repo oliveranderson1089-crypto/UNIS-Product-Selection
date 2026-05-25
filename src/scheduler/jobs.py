@@ -26,12 +26,17 @@ class RefreshReport:
     fields_set: int = 0
 
 
-def run_full_refresh() -> RefreshReport:
-    """Crawl → download → parse, end to end."""
-    logger.info("Starting full catalog refresh")
+def run_full_refresh(max_products: int | None = None) -> RefreshReport:
+    """
+    Crawl → download → parse, end to end.
+
+    Args:
+        max_products: cap for smoke-tests. None = no cap (production).
+    """
+    logger.info("Starting full catalog refresh (max_products=%s)", max_products)
     crawler = UnisCrawler()
     try:
-        crawl_stats = crawler.run()
+        crawl_stats = crawler.run(max_products=max_products)
     finally:
         crawler.close()
     parse_stats = parse_all_pending()
