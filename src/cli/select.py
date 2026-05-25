@@ -1,0 +1,156 @@
+"""
+CLI for product selection.
+
+    python -m src.cli.select "48口万兆三层核心交换机"
+    python -m src.cli.select --doc requirements.docx
+    python -m src.cli.select --image spec.png --ai
+    python -m src.cli.select "国产化接入交换机 24口千兆 PoE" --ai --top 3
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+# Ensure Chinese output renders correctly on Windows consoles whose default
+# code page is CP936/GBK. Must run before Rich initializes its Console.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:                                                   # noqa: BLE001
+        pass
+
+import click
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from ..config import get_config
+from ..requirement.schema import parse_requirement
+from ..requirement.rule_parser import _iter_field_lines
+from ..selector import AIMatcher, RuleMatcher
+from ..selector.base import MatchResult
+
+# Force a stable Unicode-capable console regardless of OS code page.
+console = Console(force_terminal=True, legacy_windows=False)
+
+
+def _setup_logging() -> None:
+    cfg = get_config()
+    level = getattr(logging, cfg.logging.level.upper(), logging.INFO)
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if cfg.logging.file:
+        handlers.append(logging.FileHandler(cfg.logging.file, encoding="utf-8"))
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=handlers,
+        force=True,
+    )
+
+
+def _render_requirement(req) -> None:
+    body = "\n".join(_iter_field_lines(req)) or "[未解析到结构化字段]"
+    console.print(Panel(body, title="解析后的需求", border_style="cyan"))
+
+
+def _render_results(results: list[MatchResult]) -> None:
+    if not results:
+        console.print(Panel("[red]没有产品匹配该需求[/red]\n请检查目录是否已抓取,"
+                            "或放宽部分条件再试。", title="结果", border_style="red"))
+        return
+
+    tbl = Table(
+        title=f"推荐产品 Top {len(results)}",
+        show_header=True, header_style="bold magenta",
+    )
+    tbl.add_column("#", style="dim", width=3)
+    tbl.add_column("型号", style="bold")
+    tbl.add_column("评分", justify="right")
+    tbl.add_column("类别")
+    tbl.add_column("端口")
+    tbl.add_column("层级")
+    tbl.add_column("国产", justify="center")
+    for i, r in enumerate(results, start=1):
+        p = r.product
+        ports = "-"
+        if p.port_count and p.port_speed:
+            ports = f"{p.port_count}×{p.port_speed}"
+        elif p.port_count:
+            ports = f"{p.port_count}口"
+        tbl.add_row(
+            str(i),
+            p.model,
+            f"{r.score:.2%}",
+            p.category or "-",
+            ports,
+            p.layer or "-",
+            "✓" if p.is_domestic else "",
+        )
+    console.print(tbl)
+
+    for i, r in enumerate(results, start=1):
+        body_lines = [f"[green]• {x}[/green]" for x in r.reasons]
+        body_lines += [f"[yellow]⚠ {x}[/yellow]" for x in r.warnings]
+        if r.product.page_url:
+            body_lines.append(f"[dim]产品页:{r.product.page_url}[/dim]")
+        console.print(
+            Panel(
+                "\n".join(body_lines),
+                title=f"#{i}  {r.product.model}   评分 {r.score:.2%}",
+                border_style="green" if r.score >= 0.7 else "yellow",
+            )
+        )
+
+
+@click.command()
+@click.argument("text", required=False)
+@click.option("--doc", "document", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help="上传文档(PDF/DOCX/XLSX/TXT/CSV/MD)作为需求来源")
+@click.option("--image", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help="上传图片作为需求来源(需 --ai 且配置 Claude key)")
+@click.option("--ai/--no-ai", default=None,
+              help="是否启用 AI 模式(默认按 config.yaml 决定)")
+@click.option("--top", "top_k", type=int, default=None, help="返回 Top N 产品")
+def main(text, document, image, ai, top_k):
+    """根据需求选择 UNIS 产品。"""
+    _setup_logging()
+    cfg = get_config()
+
+    if not (text or document or image):
+        click.echo("请提供至少一种输入:文本参数、--doc 文件、或 --image 图片。")
+        raise SystemExit(2)
+
+    if image and not ai:
+        # In rule mode we can't read images. Be loud about it.
+        console.print(
+            "[yellow]提示:图片输入需要 --ai 才能解析。当前忽略图片,仅按文本/文档解析。[/yellow]"
+        )
+
+    use_ai = ai if ai is not None else (cfg.selector.default_mode == "ai")
+    top_k = top_k or cfg.selector.top_k
+
+    with console.status("解析需求中..."):
+        req = parse_requirement(
+            text=text,
+            document_path=str(document) if document else None,
+            image_path=str(image) if image else None,
+            use_ai=use_ai,
+        )
+    _render_requirement(req)
+
+    if req.is_empty():
+        console.print("[red]未能从输入中解析出可用约束。请尝试加上端口数、速率、层级等关键参数。[/red]")
+        raise SystemExit(1)
+
+    matcher = AIMatcher() if use_ai else RuleMatcher()
+    with console.status(f"匹配产品中(引擎: {'AI' if use_ai else '规则'})..."):
+        results = matcher.match(req, top_k=top_k)
+
+    _render_results(results)
+
+
+if __name__ == "__main__":
+    main()

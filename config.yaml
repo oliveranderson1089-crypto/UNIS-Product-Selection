@@ -1,0 +1,83 @@
+# ============================================================
+# UNIS Product Selection — central configuration
+# ============================================================
+# All runtime defaults live here. Secrets live in .env.
+# Change provider/model for a task by editing this file only;
+# business code never references provider names directly.
+# ============================================================
+
+# ---------- LLM routing ----------
+# Each task maps to (provider, model). Swap providers freely
+# without touching business code.
+llm:
+  chat:
+    provider: deepseek
+    model: deepseek-chat
+    temperature: 0.2
+    max_tokens: 1024
+
+  reasoning:
+    provider: deepseek
+    model: deepseek-reasoner
+    temperature: 0.0
+    max_tokens: 2048
+
+  vision:
+    provider: claude
+    model: claude-3-5-haiku-20241022
+    temperature: 0.2
+    max_tokens: 1024
+
+  # If a provider call fails, optionally fall back to another task.
+  # null means no fallback. Used by LLMRouter.
+  fallback:
+    vision: null            # vision has no text fallback
+    reasoning: chat         # if reasoner errors, retry with chat
+    chat: null
+
+  # Cap monthly spend per provider (CNY). 0 = no cap.
+  budget_cny_monthly:
+    deepseek: 0
+    claude: 50
+
+# ---------- Storage ----------
+storage:
+  data_dir: data
+  sqlite_path: data/catalog.db
+  pdf_dir: data/pdfs
+  chroma_dir: data/chroma
+  chroma_collection: unis_products
+
+# ---------- Crawler ----------
+crawler:
+  base_url: https://www.unisyue.com
+  start_paths:
+    # Start with 自主可控 → 交换机 as MVP scope (per spec)
+    - /Autonomous_Controllable/11/
+  request_timeout: 30
+  retries: 3
+  # Categories to keep when discovering products. Empty = all.
+  category_whitelist:
+    - 交换机
+  # Skip products whose name matches any of these substrings.
+  skip_keywords: []
+
+# ---------- Selector ----------
+selector:
+  # Default mode: rule | ai
+  default_mode: rule
+  # Number of top candidates to return
+  top_k: 5
+  # When in AI mode, how many products to pass to the LLM as context
+  ai_context_top_n: 20
+
+# ---------- Scheduler ----------
+scheduler:
+  enabled: false              # Set true to run periodic updates
+  crawl_cron: "0 3 * * 1"     # Weekly Mon 03:00
+  timezone: Asia/Shanghai
+
+# ---------- Logging ----------
+logging:
+  level: INFO                 # DEBUG | INFO | WARNING | ERROR
+  file: logs/app.log
