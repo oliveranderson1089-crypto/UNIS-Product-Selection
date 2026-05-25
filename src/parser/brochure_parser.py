@@ -49,64 +49,114 @@ def _to_bool(s: str) -> bool:      return s.strip().lower() in ("yes", "true", "
 def _identity(s: str) -> str:      return s.strip()
 
 
-def _to_speed_label(s: str) -> str:
-    s = s.lower()
-    if "100g" in s or "100 g" in s: return "100G"
-    if "40g"  in s or "40 g"  in s: return "40G"
-    if "25g"  in s or "25 g"  in s: return "25G"
-    if "万兆" in s or "10g" in s:    return "10G"
-    if "2.5g" in s:                  return "2.5G"
-    if "千兆" in s or "1g" in s or "ge" in s: return "1G"
-    return s.strip()
+# Casters MAY return None to signal "I refuse this match — discard it".
+# This is the key sanity check: if the matched text doesn't normalize to a
+# value in a known set, we don't store garbage. Without this, a too-loose
+# regex captures arbitrary prose and pollutes the catalog.
+
+def _to_int(s: str) -> int | None:
+    digits = re.sub(r"[^\d]", "", s)
+    return int(digits) if digits else None
 
 
-def _to_layer(s: str) -> str:
+def _to_float(s: str) -> float | None:
+    cleaned = re.sub(r"[^\d\.]", "", s)
+    try:
+        return float(cleaned) if cleaned else None
+    except ValueError:
+        return None
+
+
+_VALID_SPEEDS = {"100M", "1G", "2.5G", "10G", "25G", "40G", "100G", "200G", "400G"}
+_VALID_LAYERS = {"L2", "L3"}
+
+
+def _to_speed_label(s: str) -> str | None:
+    """
+    Normalize a free-form speed string to one of the values in _VALID_SPEEDS.
+    Returns None if no recognized token is present — the matcher then drops
+    the field instead of storing garbage like "百分比的风扇调速".
+    """
     s = s.lower()
-    if "三层" in s or "l3" in s or "layer 3" in s: return "L3"
-    if "二层" in s or "l2" in s or "layer 2" in s: return "L2"
-    return s.strip().upper()
+    if "400g" in s or "400 g" in s:           return "400G"
+    if "200g" in s or "200 g" in s:           return "200G"
+    if "100g" in s or "100 g" in s:           return "100G"
+    if "40g"  in s or "40 g"  in s:           return "40G"
+    if "25g"  in s or "25 g"  in s:           return "25G"
+    if "10g"  in s or "万兆" in s:             return "10G"
+    if "2.5g" in s:                            return "2.5G"
+    if re.search(r"\b1g\b|千兆|gigabit|\bge\b", s): return "1G"
+    if "100m" in s or "百兆" in s:             return "100M"
+    return None
+
+
+def _to_layer(s: str) -> str | None:
+    s = s.lower()
+    if "三层" in s or re.search(r"\bl3\b|layer\s*3", s):  return "L3"
+    if "二层" in s or re.search(r"\bl2\b|layer\s*2", s):  return "L2"
+    return None
+
+
+def _to_poe(s: str) -> bool | None:
+    if re.search(r"不支持|无 ?poe|none|无供电", s, re.I): return False
+    if re.search(r"poe\+?|支持poe|802\.3a[tf]", s, re.I): return True
+    return None
+
+
+def _to_redundant(s: str) -> bool | None:
+    if re.search(r"(冗余|双电源|1\+1|2\+1|N\+1)", s): return True
+    if re.search(r"单电源|无冗余", s):                 return False
+    return None
 
 
 SPEC_RULES: list[SpecRule] = [
+    # ---- port count: must be a 1-4 digit number IMMEDIATELY after the label,
+    # tolerating only whitespace/colons between. Prevents matches across
+    # arbitrary text.
     SpecRule("port_count",
-             re.compile(r"(?:端口数量|端口数|端口总数)[\s:\：]*([\d]{1,4})"),
+             re.compile(r"(?:端口数量|端口数|端口总数|总端口数)\s*[:：]?\s*(\d{1,4})\b"),
              _to_int, "总端口数"),
 
+    # ---- port_speed: cap window to 20 chars, value must contain a unit token
+    # (G/M/兆) AND normalize to a known label.
     SpecRule("port_speed",
-             re.compile(r"(?:端口速率|端口速度|主端口速率|access port)[\s:\：]*([^\n\r]{1,40})"),
+             re.compile(r"(?:端口速率|端口速度|主端口速率|access port|端口类型)"
+                        r"\s*[:：]?\s*([^\n\r]{0,30}?(?:G|M|兆)[^\n\r]{0,10})", re.I),
              _to_speed_label, "端口速率"),
 
     SpecRule("uplink_speed",
-             re.compile(r"(?:上行端口|uplink)[\s:\：]*([^\n\r]{1,40})"),
+             re.compile(r"(?:上行端口|uplink)"
+                        r"\s*[:：]?\s*([^\n\r]{0,30}?(?:G|M|兆)[^\n\r]{0,10})", re.I),
              _to_speed_label, "上行端口速率"),
 
+    # Switching capacity / forwarding rate use a 2-group capture; the cast
+    # for these is handled specially in _apply_rule (kept as 0 placeholder).
     SpecRule("switching_capacity_gbps",
-             re.compile(r"(?:交换容量)[\s:\：]*([\d\.]+)\s*([TGtg])"),
-             # capture both groups in cast via factory:
-             lambda raw: 0,  # overridden in match loop below
-             "交换容量(Gbps)"),
+             re.compile(r"(?:交换容量|switching\s*capacity)"
+                        r"\s*[:：]?\s*([\d\.]+)\s*([TGtg])bps?", re.I),
+             lambda raw: 0, "交换容量(Gbps)"),
 
     SpecRule("forwarding_rate_mpps",
-             re.compile(r"(?:包转发率)[\s:\：]*([\d\.]+)\s*(M|Mpps|mpps)"),
-             lambda raw: 0,
-             "包转发率(Mpps)"),
+             re.compile(r"(?:包转发率|forwarding\s*rate)"
+                        r"\s*[:：]?\s*([\d\.]+)\s*(M|Mpps|mpps)", re.I),
+             lambda raw: 0, "包转发率(Mpps)"),
 
+    # ---- layer: value must contain a layer keyword right after the label.
     SpecRule("layer",
-             re.compile(r"(?:层级|协议层级|工作模式)[\s:\：]*([^\n\r]{1,30})"),
+             re.compile(r"(?:层级|协议层级|工作模式|交换层级)"
+                        r"\s*[:：]?\s*([^\n\r]{0,15}?(?:层|L\d|layer))", re.I),
              _to_layer, "层级"),
 
     SpecRule("poe",
-             re.compile(r"(?:PoE|PoE\+|供电方式)[\s:\：]*([^\n\r]{1,30})"),
-             lambda s: not bool(re.search(r"不支持|无|none", s, re.I)),
-             "PoE 支持"),
+             re.compile(r"(?:PoE|PoE\+|供电方式)\s*[:：]?\s*([^\n\r]{0,30})", re.I),
+             _to_poe, "PoE 支持"),
 
     SpecRule("redundant_power",
-             re.compile(r"(?:电源|供电)[\s:\：]*([^\n\r]{1,40})"),
-             lambda s: bool(re.search(r"(冗余|双电源|1\+1|2\+1)", s)),
-             "冗余电源"),
+             re.compile(r"(?:电源|供电)\s*[:：]?\s*([^\n\r]{0,40})", re.I),
+             _to_redundant, "冗余电源"),
 
     SpecRule("rack_units",
-             re.compile(r"(?:外形尺寸|机箱高度|高度)[^\n\r]*?(\d)\s*U", re.I),
+             re.compile(r"(?:外形尺寸|机箱高度|高度)[^\n\r]{0,20}?(\d)\s*U", re.I),
              _to_int, "U 数"),
 ]
 
@@ -134,13 +184,25 @@ class BrochureParser:
         extras: dict[str, Any] = {}
 
         for rule in SPEC_RULES:
-            m = rule.pattern.search(haystack)
-            if not m:
-                continue
-            try:
-                value = self._apply_rule(rule, m)
-            except Exception as exc:                              # noqa: BLE001
-                logger.debug("Rule %s failed on match %r: %s", rule.description, m.group(0), exc)
+            # Try every occurrence, not just the first. PDF brochures often
+            # mention "端口速率" once in a marketing blurb (where the value is
+            # prose) and once in a spec table (where the value is clean).
+            # Using `finditer` lets us keep iterating until a match yields a
+            # valid normalized value.
+            value = None
+            for m in rule.pattern.finditer(haystack):
+                try:
+                    candidate = self._apply_rule(rule, m)
+                except Exception as exc:                          # noqa: BLE001
+                    logger.debug("Rule %s failed on match %r: %s",
+                                 rule.description, m.group(0), exc)
+                    continue
+                if candidate is None:                              # caster rejected
+                    continue
+                value = candidate
+                break
+
+            if value is None:
                 continue
             if rule.column:
                 if rule.column not in result:                     # first wins
