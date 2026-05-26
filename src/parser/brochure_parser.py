@@ -26,6 +26,7 @@ from ..extractors.base import ExtractedContent
 from ..extractors.pdf import extract_pdf
 from ..storage import get_db
 from ..storage.models import Product, ProductPDF
+from .port_patterns import extract_port_specs
 
 logger = logging.getLogger(__name__)
 
@@ -183,12 +184,26 @@ class BrochureParser:
         result: dict[str, Any] = {}
         extras: dict[str, Any] = {}
 
+        # ---- 1) port specs via the aggregating PortPattern extractor --------
+        # UNIS brochures describe ports in prose ("48 个 10/100/1000BASE-T 端口")
+        # rather than in clean key:value tables, so a multi-pattern aggregator
+        # works far better than a single regex on "端口数:".
+        ports = extract_port_specs(haystack)
+        if ports.port_count is not None:
+            result["port_count"] = ports.port_count
+        if ports.port_speed is not None:
+            result["port_speed"] = ports.port_speed
+        if ports.uplink_speed is not None:
+            result["uplink_speed"] = ports.uplink_speed
+
+        # ---- 2) every other spec via the rule set ---------------------------
         for rule in SPEC_RULES:
+            if rule.column in result:                              # already filled by step 1
+                continue
             # Try every occurrence, not just the first. PDF brochures often
-            # mention "端口速率" once in a marketing blurb (where the value is
-            # prose) and once in a spec table (where the value is clean).
-            # Using `finditer` lets us keep iterating until a match yields a
-            # valid normalized value.
+            # mention a keyword once in marketing prose (no usable value) and
+            # again in a spec table (clean value). `finditer` keeps trying
+            # until a match yields a value the caster accepts.
             value = None
             for m in rule.pattern.finditer(haystack):
                 try:
@@ -205,7 +220,7 @@ class BrochureParser:
             if value is None:
                 continue
             if rule.column:
-                if rule.column not in result:                     # first wins
+                if rule.column not in result:
                     result[rule.column] = value
             else:
                 extras[rule.description or m.group(0)[:32]] = value
