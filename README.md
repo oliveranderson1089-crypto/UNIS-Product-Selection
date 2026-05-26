@@ -40,12 +40,23 @@ copy .env.example .env
 
 > 没有 API key 也能跑 —— 规则模式不需要任何 key。
 
-### 3. 初始化数据库 + 种子数据(用于无网快速试跑)
+### 3. 初始化数据库 + 抓取真实产品
 
 ```powershell
+# 一次性建表
 python scripts/init_db.py
-python scripts/seed_demo.py
+
+# 冒烟抓取:只爬 5 个产品验证全链路 (~30 秒)
+python scripts/run_crawler.py --max 5
+
+# 等冒烟通过后,跑完整抓取 (~3 分钟,20+ 个交换机 + 彩页 + 规格)
+python scripts/run_crawler.py
 ```
+
+> 在 TLS 拦截代理(FlClash / 企业防火墙)下需要先 `set CRAWLER_VERIFY_SSL=false`,
+> 或者在 `config.yaml -> crawler.verify_ssl: false` 关掉证书校验。
+
+> 查看抓取成果:`python scripts/inspect_db.py`
 
 ### 4. 试一下
 
@@ -65,31 +76,33 @@ python -m src.cli.select "我要一台便宜点的接入交换机给小办公室
 
 ---
 
-## 抓取真实产品数据
+## 定时刷新
 
-种子数据只是 demo。要让选型基于真实的 unisyue.com 产品库,跑一次抓取:
-
-```powershell
-# 单次抓取(crawl + 下载彩页 + 解析规格)
-python scripts/run_crawler.py
-```
-
-或开启定时任务:
+抓取范围由 `config.yaml -> crawler.start_paths` 控制(默认只抓 "自主可控 / 交换机"
+分类)。要让它自动每周刷一次:
 
 ```yaml
 # config.yaml
 scheduler:
   enabled: true
-  crawl_cron: "0 3 * * 1"   # 每周一凌晨 3 点
+  crawl_cron: "0 3 * * 1"   # 每周一 03:00
 ```
-
-然后:
 
 ```powershell
 python -m src.scheduler.jobs   # 阻塞型常驻进程
 ```
 
-抓取范围由 `config.yaml -> crawler.start_paths` 控制,默认只抓"自主可控/交换机"分类(完整抓取首次会比较慢)。
+---
+
+## 维护 / 调试工具
+
+| 脚本 | 用途 |
+|---|---|
+| `scripts/init_db.py` | 建库(空表) |
+| `scripts/run_crawler.py [--max N]` | 抓爬一次,可限量 |
+| `scripts/inspect_db.py` | 一屏看完产品数 / 字段覆盖率 / 前 30 条数据 |
+| `scripts/debug_crawl.py <url>` | 探测一个页面,看选择器抓到了什么(站点改版时用) |
+| `scripts/debug_pdf.py <pdf or --product CODE>` | 打印一份彩页的正文 + 所有表格(规则没抓到字段时排查用) |
 
 ---
 
