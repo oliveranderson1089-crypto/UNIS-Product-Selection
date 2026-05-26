@@ -26,6 +26,7 @@ from ..extractors.base import ExtractedContent
 from ..extractors.pdf import extract_pdf
 from ..storage import get_db
 from ..storage.models import Product, ProductPDF
+from .feature_patterns import extract_layer, extract_poe, extract_rack_units
 from .port_patterns import extract_port_specs
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,19 @@ class BrochureParser:
             result["port_speed"] = ports.port_speed
         if ports.uplink_speed is not None:
             result["uplink_speed"] = ports.uplink_speed
+
+        # ---- 1b) layer / PoE / rack-units via feature_patterns -------------
+        # These also live in prose ("支持OSPF/BGP/IS-IS", "支持POE/POE+",
+        # "外形尺寸 440x360x44"), not in clean tables.
+        layer = extract_layer(haystack)
+        if layer is not None:
+            result["layer"] = layer
+        poe = extract_poe(haystack)
+        if poe is not None:
+            result["poe"] = poe
+        ru = extract_rack_units(haystack)
+        if ru is not None:
+            result["rack_units"] = ru
 
         # ---- 2) every other spec via the rule set ---------------------------
         for rule in SPEC_RULES:
