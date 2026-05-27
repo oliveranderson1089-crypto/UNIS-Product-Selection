@@ -52,7 +52,20 @@ python -m src.cli inspect            # 查看抓取成果
 > 在 TLS 拦截代理(FlClash / 企业防火墙)下需要先 `set CRAWLER_VERIFY_SSL=false`,
 > 或者在 `config.yaml -> crawler.verify_ssl: false` 关掉证书校验。
 
-### 4. 试一下
+### 4. 启动 Web UI(推荐)
+
+```powershell
+python -m src.cli ui          # 打开 http://127.0.0.1:7860
+```
+
+三个选型入口对应你工作中的三种场景:
+- 🚀 **创新型选型** — `Autonomous_Controllable` 系列(100% 国产化)
+- 📦 **通用型选型** — `Commercial_Product` 系列(行业通用)
+- 🏷️ **名录型选型** — 限定到政府名录范围内的产品(先在"名录管理"导入 PDF)
+
+加 📊 报价单编辑 / 📁 项目管理 两个占位标签,功能逐步上线。
+
+### 5. 或者用 CLI
 
 ```powershell
 python -m src.cli --help            # 看所有子命令
@@ -60,26 +73,35 @@ python -m src.cli --help            # 看所有子命令
 # 规则模式(无需 API key)
 python -m src.cli select "48口万兆三层核心交换机,自主可控,冗余电源"
 
-# 上传文档
-python -m src.cli select --doc 客户需求.docx
+# 限定到创新产品 / 通用产品 / 名录范围
+python -m src.cli select "..." --section innovation
+python -m src.cli select "..." --section general
+python -m src.cli select "..." --catalog "2025-V1-名录"
 
-# 上传图片(需要 AI + Claude key)
+# 上传文档 / 图片(图片需 --ai + Claude key)
+python -m src.cli select --doc 客户需求.docx
 python -m src.cli select --image spec.png --ai
 
-# AI 模式 + 自然语言
-python -m src.cli select "我要一台便宜点的接入交换机给小办公室用" --ai
+# 名录管理
+python -m src.cli catalog import "名录承诺函.pdf" --name "2025-V1-名录"
+python -m src.cli catalog list
+python -m src.cli catalog show "2025-V1-名录"
+python -m src.cli catalog rematch      # 抓新产品后跑这个
 ```
 
 ---
 
-## 即将上线的功能(架构已就位)
+## 功能进度
 
-| 子命令 | 用途 | Phase |
+| 子命令 | 用途 | 状态 |
 |---|---|---|
-| `catalog import / list / show` | 政府名录管理(创新产品的子集) | 2 |
-| `ui` | Web 界面,创新型/通用型/名录型三入口 | 3 |
-| `projects new / list / show / status` | 项目/标书/报价单归档 | 4 |
-| `quote format / attach` | 报价单格式化(删列/换服务/改 logo) | 5 |
+| `select` | 文本/文档/图片 → 推荐 UNIS 产品 | ✅ |
+| `crawl` | 抓取 unisyue.com 全量产品 + 彩页 | ✅ |
+| `inspect` | 看产品库健康度(数量、字段覆盖) | ✅ |
+| `catalog import / list / show / rematch` | 政府名录管理 | ✅ |
+| `ui` | Web 界面(3 个选型入口 + 名录管理) | ✅ |
+| `projects new / list / show / status` | 项目/标书/报价单归档 | 🔜 Phase 4 |
+| `quote format / attach` | 报价单格式化 | 🔜 Phase 5 |
 
 参考 `ARCHITECTURE.md` 了解每个 Phase 的落地位置。
 
