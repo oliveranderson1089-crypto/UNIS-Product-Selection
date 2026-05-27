@@ -24,7 +24,9 @@ llm:
 
   vision:
     provider: claude
-    model: claude-3-5-haiku-20241022
+    # `*-latest` aliases auto-track the current stable build; safer than
+    # pinning a dated snapshot that Anthropic eventually retires.
+    model: claude-haiku-4-5
     temperature: 0.2
     max_tokens: 1024
 

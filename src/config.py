@@ -234,7 +234,11 @@ def get_config(config_file: str | os.PathLike | None = None) -> AppConfig:
     runtime (e.g. tests), call `get_config.cache_clear()` first.
     """
     # Load .env BEFORE reading the YAML so env-driven overrides apply.
-    load_dotenv(DEFAULT_ENV_FILE, override=False)
+    # override=True: the project's .env wins over pre-existing process env
+    # vars. This matters on Windows where tools (e.g. Claude Code, IDE
+    # integrations) sometimes pre-set keys to an EMPTY string, which would
+    # otherwise shadow our real .env values.
+    load_dotenv(DEFAULT_ENV_FILE, override=True)
 
     path = Path(config_file) if config_file else Path(os.getenv("CONFIG_FILE", DEFAULT_CONFIG_FILE))
     raw = _read_yaml(path)

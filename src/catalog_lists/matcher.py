@@ -14,6 +14,7 @@ strategy succeeded (exact / normalized / fuzzy / none).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -24,13 +25,34 @@ from .model_codes import normalize
 
 logger = logging.getLogger(__name__)
 
+# Fuzzy matching only fires when BOTH normalized strings have at least
+# this many characters. Without a floor, short product slugs like "UNIS"
+# (4 chars) become wildcards that match every other UNIS product as a
+# substring. 8 chars is long enough to include the model number digits
+# that actually identify a product family.
+MIN_FUZZY_LEN = 8
+
+# Port-count tokens in 名录 SKU codes that the series-level URL slug omits.
+# e.g.  "UNIS S5800-56T-EI-G"   →   strip "56T"  →  "UNIS S5800-EI-G"
+#       "UNIS S6600XP-54XG-EI-G" → strip "54XG" → "UNIS S6600XP-EI-G"
+#       "UNIS S12600-08-G"      →   strip "08"  → "UNIS S12600-G"
+# Pattern: a hyphen-bounded token that's <digits><optional letters> AND
+# is followed by another hyphen (so we only strip MIDDLE tokens, never
+# the trailing "-G" / "-EI-G" suffix).
+_PORT_COUNT_TOKEN = re.compile(r"-(\d+[A-Z]*)(?=-)")
+
+
+def strip_port_count(code: str) -> str:
+    """Drop the inline port-count token so a SKU collapses to its series."""
+    return _PORT_COUNT_TOKEN.sub("", code)
+
 
 @dataclass
 class MatchResult:
     raw_code: str
     product_id: int | None
     product_model: str | None
-    method: str   # "exact" | "normalized" | "fuzzy" | "none"
+    method: str   # "exact" | "normalized" | "series" | "fuzzy" | "none"
 
 
 def match_codes_to_products(
@@ -69,14 +91,35 @@ def match_codes_to_products(
             out.append(MatchResult(raw, p.id, p.model, "normalized"))
             continue
 
+        # SERIES match: 名录 codes often spell out the port-count variant
+        # (UNIS S5800-56T-EI-G) while our catalog only carries the SERIES
+        # page (UNIS-S5800-EI-G). Strip the inline port-count token and
+        # re-try the normalized lookup before falling through to fuzzy.
+        stripped = strip_port_count(raw)
+        if stripped != raw:
+            stripped_norm = normalize(stripped)
+            if stripped_norm in by_norm:
+                p = by_norm[stripped_norm]
+                out.append(MatchResult(raw, p.id, p.model, "series"))
+                continue
+
         # Fuzzy: substring on normalized. The 名录 code might be a series
         # name (no suffix) and we want it to map to the canonical product;
         # OR vice versa. Try both directions.
-        fuzzy_hits = sorted(
-            (p for p in products
-             if norm and (norm in normalize(p.model) or normalize(p.model) in norm)),
-            key=lambda p: p.id,
-        )
+        #
+        # IMPORTANT: skip products whose normalized model is shorter than
+        # MIN_FUZZY_LEN — they're too generic (e.g. "UNIS" = 4 chars) and
+        # would otherwise wildcard-match every other UNIS code in the
+        # catalog as a substring.
+        fuzzy_hits: list[Product] = []
+        if norm and len(norm) >= MIN_FUZZY_LEN:
+            for p in products:
+                p_norm = normalize(p.model)
+                if len(p_norm) < MIN_FUZZY_LEN:
+                    continue
+                if norm in p_norm or p_norm in norm:
+                    fuzzy_hits.append(p)
+            fuzzy_hits.sort(key=lambda p: p.id)
         if fuzzy_hits:
             if len(fuzzy_hits) > 1:
                 logger.info(
