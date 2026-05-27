@@ -18,6 +18,7 @@ import gradio as gr
 
 from .catalog_page import build_catalog_tab
 from .projects_page import build_projects_tab
+from .quote_page import build_quote_tab
 from .select_page import build_select_tab
 
 
@@ -72,19 +73,8 @@ def build_app() -> gr.Blocks:
         # ---- 项目管理 ---------------------------------------------------
         build_projects_tab()
 
-        # ---- 报价单占位 -------------------------------------------------
-        with gr.Tab("📊 报价单编辑"):
-            gr.Markdown(
-                "## 报价单编辑 — Phase 5 占位\n\n"
-                "即将上线的能力:\n\n"
-                "- 上传 H3C 配置器导出的 `.xls`,自动应用格式化规则\n"
-                "- **通用规则**:删除 4 个固定列、删 H3C logo、空产品型号自动从描述补\n"
-                "- **服务器专属**:删非客户面向的内部组件行(导风罩、Riser、滑轨…)\n"
-                "- **R4930/R3935 G7**:从 `IT产品BOM编码.xlsx` 查找替换服务行\n"
-                "- **R3800FT20 G3**:根据配置模板复制描述,保留 Excel 公式\n"
-                "- 处理完直接挂到项目下的某个版本\n\n"
-                "_目前请走 CLI:`python -m src.cli quote`(也是占位)_"
-            )
+        # ---- 报价单编辑 -------------------------------------------------
+        build_quote_tab()
 
     return app
 

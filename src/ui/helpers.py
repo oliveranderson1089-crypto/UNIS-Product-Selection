@@ -285,6 +285,70 @@ def rematch_all_ui() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Quote formatting
+# ---------------------------------------------------------------------------
+def format_quote_ui(
+    input_path: str | None,
+    skip_logo: bool,
+    skip_columns: bool,
+    skip_model_fill: bool,
+    skip_server_cleanup: bool,
+) -> tuple[str, str | None]:
+    """
+    Gradio callback for quote format.
+
+    Returns (markdown_report, downloadable_file_path).
+    """
+    if not input_path:
+        return ("❌ 请选择一个 .xlsx 报价单。", None)
+
+    from pathlib import Path
+    from ..quotes import DEFAULT_RULES, format_quote
+    from ..quotes.exceptions import QuoteError
+
+    skip_names = set()
+    if skip_logo: skip_names.add("remove_h3c_logo")
+    if skip_columns: skip_names.add("drop_fixed_columns")
+    if skip_model_fill: skip_names.add("fill_empty_model")
+    if skip_server_cleanup: skip_names.add("drop_internal_server_components")
+
+    rules = [r for r in DEFAULT_RULES if r.name not in skip_names]
+    src = Path(input_path)
+    out = src.with_name(src.stem + ".formatted.xlsx")
+
+    try:
+        report = format_quote(src, out, rules=rules)
+    except QuoteError as exc:
+        return (f"❌ **格式化失败:** `{exc}`", None)
+    except Exception as exc:                                      # noqa: BLE001
+        logger.exception("format_quote crashed")
+        return (f"❌ **意外错误:** `{exc}`", None)
+
+    lines = [
+        f"✅ **格式化完成** — 应用 **{report.applied_count}** / {len(report.rule_results)} 条规则",
+        "",
+        f"- 输入: `{src.name}`",
+        f"- 输出: `{out.name}` ({out.stat().st_size // 1024} KB)",
+        "",
+    ]
+    for r in report.rule_results:
+        emoji = "✅" if r.applied else ("➖" if not r.changes else "ℹ️")
+        lines.append(f"### {emoji} `{r.name}`")
+        if r.changes:
+            for c in r.changes[:12]:
+                lines.append(f"  - {c}")
+            if len(r.changes) > 12:
+                lines.append(f"  - _... 还有 {len(r.changes) - 12} 条改动_")
+        for w in r.warnings:
+            lines.append(f"  - ⚠️ {w}")
+        if not r.changes and not r.warnings:
+            lines.append("  - _(无变化)_")
+        lines.append("")
+
+    return ("\n".join(lines), str(out))
+
+
+# ---------------------------------------------------------------------------
 # Projects
 # ---------------------------------------------------------------------------
 def scan_projects_ui() -> str:
@@ -449,6 +513,8 @@ __all__ = [
     "import_catalog_via_ui",
     "show_catalog_md",
     "rematch_all_ui",
+    # quotes
+    "format_quote_ui",
     # projects
     "scan_projects_ui",
     "list_projects_md",
