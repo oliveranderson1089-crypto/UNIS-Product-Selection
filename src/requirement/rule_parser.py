@@ -19,6 +19,16 @@ from .schema import Category, Requirement, RequirementField
 # ---------------------------------------------------------------------------
 # Patterns. Order matters when multiple match the same span — longer/more
 # specific patterns should come first.
+#
+# IMPORTANT — \b vs Chinese context:
+#   Python regex `\b` is a transition between \w and \W. Chinese characters
+#   are \w under Unicode (the default). So `\b千兆\b` does NOT match inside
+#   "48口千兆接入交换机" because "口" and "接" are both \w — there is no
+#   boundary. The same trap hits `\b2U\b` next to a Chinese character.
+#
+#   Rule: use \b ONLY when the token boundary is between a word-char and
+#   a NON-word-char (digits/Latin pressed against Chinese is the bad case).
+#   For Chinese tokens we drop \b entirely; they're distinctive on their own.
 # ---------------------------------------------------------------------------
 
 CATEGORY_KEYWORDS: dict[Category, tuple[str, ...]] = {
@@ -30,26 +40,54 @@ CATEGORY_KEYWORDS: dict[Category, tuple[str, ...]] = {
     "无线":   ("无线", "wifi", "wi-fi", "ap", "ac控制器"),
 }
 
+# For each speed tier, we list two pattern families:
+#   - English/numeric tokens stay wrapped in \b (so "1g" doesn't match "1gb"
+#     inside "16gb" / a serial number)
+#   - Chinese tokens are bare (no \b — see comment block above)
+# Order matters: higher speeds first so "100G" doesn't get shadowed by "10G".
 SPEED_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\b(100\s*g|百\s*g|万兆\s*\*\s*100)\b", re.I), "100G"),
-    (re.compile(r"\b(40\s*g)\b", re.I), "40G"),
-    (re.compile(r"\b(25\s*g)\b", re.I), "25G"),
-    (re.compile(r"\b(10\s*g|万兆)\b", re.I), "10G"),
-    (re.compile(r"\b(2\.5\s*g)\b", re.I), "2.5G"),
-    (re.compile(r"\b(1\s*g|千兆|gigabit|ge\b)\b", re.I), "1G"),
-    (re.compile(r"\b(100\s*m|百兆)\b", re.I), "100M"),
+    # 400G / 200G — datacenter top tier
+    (re.compile(r"\b400\s*g(?:e|be)?\b", re.I), "400G"),
+    (re.compile(r"\b200\s*g(?:e|be)?\b", re.I), "200G"),
+    # 100G
+    (re.compile(r"\b100\s*g(?:e|be)?\b", re.I), "100G"),
+    (re.compile(r"百\s*g", re.I), "100G"),
+    # 40G
+    (re.compile(r"\b40\s*g(?:e|be)?\b", re.I), "40G"),
+    # 25G
+    (re.compile(r"\b25\s*g(?:e|be)?\b", re.I), "25G"),
+    # 10G
+    (re.compile(r"\b10\s*g(?:e|be)?\b", re.I), "10G"),
+    (re.compile(r"万兆"), "10G"),
+    # 2.5G
+    (re.compile(r"\b2\.5\s*g(?:e|be)?\b", re.I), "2.5G"),
+    # 1G
+    (re.compile(r"\b1\s*g(?:e|be)?\b", re.I), "1G"),
+    (re.compile(r"\bgigabit\b|\bGE\b"), "1G"),
+    (re.compile(r"千兆"), "1G"),
+    # 100M
+    (re.compile(r"\b100\s*m(?:b|bps)?\b", re.I), "100M"),
+    (re.compile(r"百兆"), "100M"),
 ]
 
+# Layer patterns — Chinese tokens already lacked \b (good), English ones use
+# \b only on the Latin alphabet side.
 LAYER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"(三层|l3|layer\s*3)", re.I), "L3"),
-    (re.compile(r"(二层|l2|layer\s*2)", re.I), "L2"),
+    (re.compile(r"三层"), "L3"),
+    (re.compile(r"\bL3\b|\blayer\s*3\b", re.I), "L3"),
+    (re.compile(r"二层"), "L2"),
+    (re.compile(r"\bL2\b|\blayer\s*2\b", re.I), "L2"),
 ]
 
-# "48口" / "48 ports" / "48个端口"
-PORT_COUNT_RE = re.compile(r"(\d{1,3})\s*(?:口|个端口|ports?|个口|路)", re.I)
+# "48口" / "48 ports" / "48个端口" — has explicit unit suffix, no \b needed.
+PORT_COUNT_RE = re.compile(r"(\d{1,3})\s*(?:口|个端口|个口|路|ports?)", re.I)
 
-# "2U", "1U", "4U"
-RU_RE = re.compile(r"\b(\d{1,2})\s*U\b", re.I)
+# Rack units. Need to NOT match digits inside longer numbers ("100U"  →
+# don't grab "00U") and NOT match "U" inside English words ("USB"). \b is
+# unsafe next to Chinese, so use explicit lookarounds:
+#   (?<![0-9.])  — not preceded by digit/decimal (avoids tail of "100U")
+#   (?![A-Za-z0-9])  — not followed by alnum (avoids "USB", "U2")
+RU_RE = re.compile(r"(?<![0-9.])(\d{1,2})\s*U(?![A-Za-z0-9])", re.IGNORECASE)
 
 # "100Gbps 交换容量" / "switching capacity 1.2T"
 CAPACITY_RE = re.compile(
