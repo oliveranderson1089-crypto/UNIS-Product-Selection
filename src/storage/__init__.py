@@ -5,13 +5,21 @@ from .database import (
     get_db,
     init_schema,
 )
-from .models import Product, ProductPDF, CrawlRecord
+from .models import (
+    CatalogEntry,
+    CatalogList,
+    CrawlRecord,
+    Product,
+    ProductPDF,
+)
 
 __all__ = [
     "Database",
     "Product",
     "ProductPDF",
     "CrawlRecord",
+    "CatalogList",
+    "CatalogEntry",
     "get_db",
     "init_schema",
 ]

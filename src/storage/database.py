@@ -84,6 +84,7 @@ class Database:
     def find_products(
         self,
         *,
+        section: str | None = None,
         category: str | None = None,
         min_port_count: int | None = None,
         port_speed: str | None = None,
@@ -91,14 +92,22 @@ class Database:
         poe: bool | None = None,
         is_domestic: bool | None = None,
         max_price: float | None = None,
+        catalog_name: str | None = None,
         limit: int = 200,
     ) -> list[Product]:
         """
         Coarse SQL pre-filter. The matcher does fine-grained scoring on top.
         Keep this conservative — anything we filter out here is invisible to
         the matcher.
+
+        catalog_name: if set, restricts results to products that appear in
+        the named CatalogList (政府名录 etc.). Unmatched entries in the
+        catalog are skipped.
         """
+        from .models import CatalogEntry, CatalogList   # local: avoid cycle
         stmt = select(Product)
+        if section:
+            stmt = stmt.where(Product.section == section)
         if category:
             stmt = stmt.where(Product.category == category)
         if min_port_count is not None:
@@ -120,6 +129,15 @@ class Database:
         if max_price is not None:
             stmt = stmt.where(
                 (Product.list_price_cny == None) | (Product.list_price_cny <= max_price)  # noqa: E711
+            )
+        if catalog_name is not None:
+            # Inner join via CatalogEntry to restrict to products that are
+            # actually in the named whitelist.
+            stmt = (
+                stmt.join(CatalogEntry, CatalogEntry.product_id == Product.id)
+                .join(CatalogList, CatalogList.id == CatalogEntry.catalog_id)
+                .where(CatalogList.name == catalog_name)
+                .where(CatalogEntry.product_id != None)                                   # noqa: E711
             )
         stmt = stmt.limit(limit)
         with self.session() as s:

@@ -43,7 +43,15 @@ SPEED_RANK = {
 
 @dataclass
 class RuleMatcher(Matcher):
-    """No LLM, no network. Pure SQL + Python scoring."""
+    """No LLM, no network. Pure SQL + Python scoring.
+
+    Optional scoping (set on the instance before calling .match):
+      section       — "innovation" | "general" | None
+      catalog_name  — restrict to products in a named CatalogList (政府名录…)
+    """
+
+    section: str | None = None
+    catalog_name: str | None = None
 
     def match(self, requirement: Requirement, *, top_k: int = 5) -> list[MatchResult]:
         candidates = self._prefilter(requirement)
@@ -57,6 +65,8 @@ class RuleMatcher(Matcher):
     def _prefilter(self, req: Requirement) -> list[Product]:
         db = get_db()
         return db.find_products(
+            section=self.section,
+            catalog_name=self.catalog_name,
             category=req.category,
             min_port_count=req.port_count.min if req.port_count.is_set() else None,
             port_speed=req.port_speed.exact if req.port_speed.is_set() else None,

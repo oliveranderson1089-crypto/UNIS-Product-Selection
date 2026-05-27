@@ -91,7 +91,13 @@ def _render_results(results: list[MatchResult]) -> None:
 @click.option("--ai/--no-ai", default=None,
               help="是否启用 AI 模式(默认按 config.yaml 决定)")
 @click.option("--top", "top_k", type=int, default=None, help="返回 Top N 产品")
-def cmd(text, document, image, ai, top_k):
+@click.option("--section",
+              type=click.Choice(["innovation", "general"], case_sensitive=False),
+              default=None,
+              help="限定区:innovation=创新型 / general=通用型")
+@click.option("--catalog", "catalog_name", default=None,
+              help="限定到某份名录(对应 catalog import 时的 --name)")
+def cmd(text, document, image, ai, top_k, section, catalog_name):
     setup_logging()
     cfg = get_config()
 
@@ -106,6 +112,7 @@ def cmd(text, document, image, ai, top_k):
 
     use_ai = ai if ai is not None else (cfg.selector.default_mode == "ai")
     top_k = top_k or cfg.selector.top_k
+    section = section.lower() if section else None
 
     with console.status("解析需求中..."):
         req = parse_requirement(
@@ -122,8 +129,20 @@ def cmd(text, document, image, ai, top_k):
         )
         raise SystemExit(1)
 
-    matcher = AIMatcher() if use_ai else RuleMatcher()
-    with console.status(f"匹配产品中(引擎: {'AI' if use_ai else '规则'})..."):
+    # Apply scope to the underlying RuleMatcher (AIMatcher delegates to it).
+    if use_ai:
+        matcher = AIMatcher()
+        matcher.rule.section = section
+        matcher.rule.catalog_name = catalog_name
+    else:
+        matcher = RuleMatcher(section=section, catalog_name=catalog_name)
+
+    scope_bits = []
+    if section: scope_bits.append(f"section={section}")
+    if catalog_name: scope_bits.append(f"catalog={catalog_name}")
+    scope_str = f" [{', '.join(scope_bits)}]" if scope_bits else ""
+
+    with console.status(f"匹配产品中(引擎: {'AI' if use_ai else '规则'}){scope_str}..."):
         results = matcher.match(req, top_k=top_k)
     _render_results(results)
 

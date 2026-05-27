@@ -14,10 +14,18 @@ tenacity>=8.2.0
 # ===== Document extraction =====
 pdfplumber>=0.11.0          # PDF text + tables
 pypdf>=4.0.0                # PDF metadata, fallback
+pypdfium2>=4.30.0           # PDF -> image rasterization (for OCR / vision)
 python-docx>=1.1.0          # Word .docx
 openpyxl>=3.1.0             # Excel .xlsx
+xlrd>=2.0.1                 # Legacy .xls (H3C 配置器 exports old format)
 pandas>=2.2.0               # Spreadsheet handling
 chardet>=5.2.0              # Text encoding detection
+Pillow>=10.0.0              # Image handling for OCR + vision pipelines
+
+# ===== OCR (fallback for image-only PDFs when Claude is unavailable) =====
+# rapidocr-onnxruntime is a lightweight ONNX-based port of PaddleOCR with
+# excellent Chinese accuracy at ~150MB total (vs PaddlePaddle's 500MB+).
+rapidocr-onnxruntime>=1.4.0
 
 # ===== Storage =====
 SQLAlchemy>=2.0.0
