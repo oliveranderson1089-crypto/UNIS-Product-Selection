@@ -22,24 +22,39 @@ from dataclasses import dataclass, field
 from typing import Iterable
 from urllib.parse import urljoin, urlparse
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 from ..config import get_config
 from ..storage import get_db
+from .categories import (
+    SECTION_AUTONOMOUS,
+    SECTION_COMMERCIAL,
+    SECTION_LABEL_EN,
+    english_slug_for,
+    lookup_by_url_parts,
+)
 from .http import PoliteClient
 from .pdf_downloader import PDFDownloader
 
 logger = logging.getLogger(__name__)
 
 # Regex matching the canonical product URL shape:
-#   /<Category>/<NumericId>/<ModelSlug>/<NumericId>.html
-# Slug MUST contain at least one letter, so we don't accidentally match
-# support-tree URLs like /Service_Support/32/322/119.html where the "slug"
-# is purely numeric.
+#   /<Section>/<CategoryId>/<ModelSlug>/<ProductId>.html
+# Section is Autonomous_Controllable | Commercial_Product (we filter
+# everything else, esp. /Service_Support/, with PRODUCT_SECTION_RE).
+# Slug MUST contain at least one letter so we skip support-tree URLs like
+# /Service_Support/32/322/119.html where the "slug" is purely numeric.
 PRODUCT_URL_RE = re.compile(r"/[A-Za-z_]+/\d+/(?=[^/]*[A-Za-z])[^/]+/\d+\.html$")
+PRODUCT_SECTION_RE = re.compile(
+    r"^/(Autonomous_Controllable|Commercial_Product)/(\d+)/[^/]+/\d+\.html$"
+)
 
-# Brochure links commonly contain 彩页 / brochure / .pdf
-BROCHURE_HINT_RE = re.compile(r"(彩页|brochure|datasheet|规格书|参数手册|说明书)", re.I)
+# Brochure section heading text we search for on a product page. Anything
+# under this heading until the next heading is treated as the canonical
+# product datasheet (彩页). Other headings (安装手册 / 用户手册 / 光模块手册
+# / 版本说明书 / 快速入门 …) are explicitly NOT downloaded.
+BROCHURE_HEADING = "产品彩页"
+HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
 
 @dataclass
@@ -48,7 +63,9 @@ class ProductDraft:
 
     model: str
     name: str | None = None
-    category: str | None = None
+    section: str | None = None        # "innovation" | "general"
+    category: str | None = None       # Chinese leaf category e.g. "交换机"
+    category_slug: str | None = None  # English slug used for folder name
     sub_category: str | None = None
     series: str | None = None
     description: str | None = None
@@ -61,13 +78,16 @@ class ProductDraft:
         return {
             "model": self.model,
             "series": self.series,
+            "section": self.section,
             "category": self.category,
             "sub_category": self.sub_category,
             "name": self.name,
             "description": self.description,
             "page_url": self.page_url,
-            # All UNIS products on this site are domestic (自主可控 family).
-            "is_domestic": True,
+            # UNIS Autonomous_Controllable is the 自主可控 family; everything
+            # else (Commercial_Product) is not necessarily domestic. Mark
+            # accordingly so the matcher's "国产化" filter is accurate.
+            "is_domestic": self.section == "innovation",
         }
 
 
@@ -115,7 +135,13 @@ class UnisCrawler:
             db.upsert_product(draft.to_db_payload())
             new_count += 1
             for title, pdf_url in draft.pdf_links:
-                if self.downloader.download_for(draft.model, title, pdf_url):
+                if self.downloader.download_brochure(
+                    section=draft.section or "unknown",
+                    category_slug=draft.category_slug or "uncategorized",
+                    model=draft.model,
+                    title=title,
+                    url=pdf_url,
+                ):
                     pdf_count += 1
 
         return {"products": new_count, "pdfs": pdf_count}
@@ -152,12 +178,27 @@ class UnisCrawler:
 
     @staticmethod
     def _looks_like_category(url: str) -> bool:
-        """Heuristic: URLs without a trailing .html numeric id are category-ish."""
+        """A `default.html` page or a section/category dir is recursable."""
         path = urlparse(url).path
-        return not path.endswith(".html") and "/Autonomous_Controllable/" in path
+        if not (path.startswith("/Autonomous_Controllable/")
+                or path.startswith("/Commercial_Product/")):
+            return False
+        # Category pages typically end with default.html OR are bare directories.
+        return path.endswith("/default.html") or path.endswith("/") \
+            or not path.endswith(".html")
 
     # ---- per-product scrape -------------------------------------------------
     def _scrape_product(self, url: str) -> ProductDraft | None:
+        # Identify the canonical section + category from the URL itself.
+        # Anything that doesn't match the canonical product URL shape (e.g.
+        # related-products cross-links into Service_Support) is skipped.
+        section_match = PRODUCT_SECTION_RE.match(urlparse(url).path)
+        if not section_match:
+            logger.debug("URL %s not in canonical section — skipping", url)
+            return None
+        section_path, cat_id = section_match.group(1), section_match.group(2)
+        cat_spec = lookup_by_url_parts(section_path, cat_id)
+
         html = self._safe_get_html(url)
         if html is None:
             return None
@@ -172,10 +213,21 @@ class UnisCrawler:
             logger.debug("Skipping %s (matched skip_keywords)", model)
             return None
 
+        # Category from URL mapping is more reliable than DOM inference.
+        # We still call _infer_category to catch any edge cases the mapping
+        # doesn't know about, but the URL wins.
+        category_zh = cat_spec.name_zh if cat_spec else self._infer_category(url, soup)
+        category_slug = (
+            cat_spec.slug_en if cat_spec
+            else (english_slug_for(category_zh) if category_zh else "uncategorized")
+        )
+
         draft = ProductDraft(
             model=model,
             name=self._extract_title(soup),
-            category=self._infer_category(url, soup),
+            section=SECTION_LABEL_EN.get(section_path),
+            category=category_zh,
+            category_slug=category_slug,
             series=self._extract_series(model),
             description=self._extract_description(soup),
             page_url=url,
@@ -321,26 +373,42 @@ class UnisCrawler:
     @staticmethod
     def _extract_pdf_links(soup: BeautifulSoup, base: str) -> Iterable[tuple[str, str]]:
         """
-        Collect all PDF links, then prefer the real brochure (彩页) when one
-        exists. UNIS product pages typically attach 5–10 PDFs (user manual,
-        install guide, optical-module table…); only the 彩页 is the spec
-        sheet we want to parse for selection. Falling back to all PDFs keeps
-        us robust against pages that name their brochure differently.
-        """
-        all_pdfs: list[tuple[str, str]] = []
-        brochures: list[tuple[str, str]] = []
-        for a in soup.find_all("a", href=True):
-            href = a["href"].strip()
-            if not href.lower().endswith(".pdf"):
-                continue
-            absolute = urljoin(base, href)
-            title = a.get_text(" ", strip=True) or href.rsplit("/", 1)[-1]
-            entry = (title, absolute)
-            all_pdfs.append(entry)
-            if BROCHURE_HINT_RE.search(title) or BROCHURE_HINT_RE.search(absolute):
-                brochures.append(entry)
+        Return ONLY the PDFs under the "产品彩页" heading.
 
-        yield from (brochures if brochures else all_pdfs)
+        UNIS product pages organize their "相关资料" sidebar into sections,
+        each introduced by an <h*> heading like:
+            <h*>安装指导</h*>          ← we skip these
+            <h*>快速入门</h*>          ← skip
+            <h*>光模块手册</h*>        ← skip
+            <h*>产品彩页</h*>          ← THIS is what we want
+            <h*>(next section)</h*>    ← stop here
+
+        We find the brochure heading, then walk forward in DOM until the
+        next heading, collecting every `<a href="*.pdf">` we encounter.
+        If no brochure section is present, we return nothing — better to
+        omit a product than to download a manual mis-classified as a
+        spec sheet (which previously polluted the parser).
+        """
+        heading = None
+        for tag in soup.find_all(HEADING_TAGS):
+            if BROCHURE_HEADING in tag.get_text(strip=True):
+                heading = tag
+                break
+        if heading is None:
+            return
+
+        for node in heading.find_all_next():
+            if node is heading:
+                continue
+            if node.name in HEADING_TAGS:
+                break                         # entered the next section, stop
+            if node.name == "a" and node.has_attr("href"):
+                href = node["href"].strip()
+                if not href.lower().endswith(".pdf"):
+                    continue
+                absolute = urljoin(base, href)
+                title = node.get_text(" ", strip=True) or href.rsplit("/", 1)[-1]
+                yield (title, absolute)
 
     # ---- low-level helper ---------------------------------------------------
     def _safe_get_html(self, url: str) -> str | None:

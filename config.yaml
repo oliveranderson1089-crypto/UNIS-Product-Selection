@@ -51,18 +51,34 @@ storage:
 # ---------- Crawler ----------
 crawler:
   base_url: https://www.unisyue.com
+  # Full catalog scope: both 创新产品 (Autonomous_Controllable, IDs 11-15)
+  # and 通用产品 (Commercial_Product, IDs 21-28). The crawler also reads
+  # the authoritative ZH/EN name mapping from src/scraper/categories.py;
+  # if a category is added on the site, register it there too.
   start_paths:
-    # Start with 自主可控 → 交换机 as MVP scope (per spec)
-    - /Autonomous_Controllable/11/
+    # 创新产品 (innovation)
+    - /Autonomous_Controllable/11/default.html   # 交换机
+    - /Autonomous_Controllable/12/default.html   # 路由器
+    - /Autonomous_Controllable/13/default.html   # 安全
+    - /Autonomous_Controllable/14/default.html   # 计算存储
+    - /Autonomous_Controllable/15/default.html   # 大模型一体机
+    # 通用产品 (general)
+    - /Commercial_Product/21/default.html        # 交换机
+    - /Commercial_Product/22/default.html        # 路由器
+    - /Commercial_Product/23/default.html        # 安全
+    - /Commercial_Product/24/default.html        # 计算存储
+    - /Commercial_Product/25/default.html        # 智能管理
+    - /Commercial_Product/26/default.html        # 云计算
+    - /Commercial_Product/27/default.html        # 大数据
+    - /Commercial_Product/28/default.html        # 无线局域网
   request_timeout: 30
   retries: 3
   # TLS verification. Set false ONLY if you're behind a proxy that does
   # TLS interception (FlClash / corporate firewall) and you trust it.
   # The env var CRAWLER_VERIFY_SSL=false overrides this at runtime.
   verify_ssl: true
-  # Categories to keep when discovering products. Empty = all.
-  category_whitelist:
-    - 交换机
+  # Optional: restrict to a subset of categories (Chinese names). Empty = all.
+  category_whitelist: []
   # Skip products whose name matches any of these substrings.
   skip_keywords: []
 

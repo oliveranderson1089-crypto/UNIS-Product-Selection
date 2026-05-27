@@ -37,6 +37,10 @@ class Product(Base):
     id:           Mapped[int]      = mapped_column(Integer, primary_key=True)
     model:        Mapped[str]      = mapped_column(String(128), unique=True, index=True)
     series:       Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # ---- where on the site this product lives ----
+    # section is "innovation" (创新产品) or "general" (通用产品), or NULL for
+    # demo/seed data. Used to scope queries like "show me 创新 switches only".
+    section:      Mapped[str | None] = mapped_column(String(32),  nullable=True, index=True)
     category:     Mapped[str | None] = mapped_column(String(64),  nullable=True, index=True)
     sub_category: Mapped[str | None] = mapped_column(String(64),  nullable=True, index=True)
     name:         Mapped[str | None] = mapped_column(String(256), nullable=True)

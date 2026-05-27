@@ -1,10 +1,31 @@
 """
 Brochure PDF downloader.
 
+On-disk layout:
+    data/pdfs/
+        innovation/
+            switches/
+                UNIS S12600-CR-G系列数据中心交换机.pdf
+                UNIS S6520X-EI万兆汇聚交换机.pdf
+                ...
+            routers/
+            security/
+            ...
+        general/
+            switches/
+            routers/
+            ...
+
+The filename comes from the anchor text on the product page (which is
+human-readable, e.g. "UNIS S12600-CR-G系列数据中心交换机") rather than
+the URL's UUID-style filename. This makes the downloads folder
+browsable without referring back to the database.
+
 Responsibilities:
-- Persist PDFs to `<data.pdf_dir>/<model_slug>/<filename>`.
-- Skip downloads when SHA-256 matches existing file (etag-equivalent).
-- Record the URL → file mapping in SQLite so the parser knows what's local.
+- Persist PDFs to the layout above.
+- Skip re-downloads when the file is already present (SHA-256 verified).
+- Record the URL → local-path mapping in SQLite so the parser knows
+  what's local.
 """
 
 from __future__ import annotations
@@ -25,16 +46,43 @@ from .http import PoliteClient
 
 logger = logging.getLogger(__name__)
 
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9._\-]+")
+# Strip Windows-illegal filename chars; preserve Chinese and most punctuation.
+_ILLEGAL_FNAME = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+# Slug for path components — alnum+dash only, no spaces/brackets/Chinese.
+_SAFE_SLUG = re.compile(r"[^A-Za-z0-9._\-]+")
 
 
-def _safe_filename(url: str) -> str:
-    name = unquote(urlparse(url).path.rsplit("/", 1)[-1]) or "brochure.pdf"
-    return _SAFE_NAME.sub("_", name)
+def _readable_filename(title: str, fallback_url: str) -> str:
+    """
+    Build a human-readable filename from the anchor text.
+
+    Strips brackets/whitespace that the source page often wraps brochure
+    titles in (e.g. "【产品彩页】-【UNIS S12600...】"), so the final
+    on-disk name is clean: "UNIS S12600-CR-G系列数据中心交换机.pdf".
+    """
+    name = title.strip() if title else ""
+    # Drop common decorative prefixes seen in unisyue link text.
+    for prefix in ("【产品彩页】-", "【产品彩页】", "产品彩页-", "产品彩页"):
+        if name.startswith(prefix):
+            name = name[len(prefix):].lstrip("-—– ")
+    name = name.strip("【】[]() ").strip()
+    if not name:
+        name = unquote(urlparse(fallback_url).path.rsplit("/", 1)[-1]) or "brochure"
+    # Drop Windows-illegal chars only — keep Chinese.
+    name = _ILLEGAL_FNAME.sub("_", name).strip(" .")
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+    # Hard cap on length — some titles are very long.
+    if len(name.encode("utf-8")) > 200:
+        stem = name[:-4]
+        name = stem[:60].rstrip() + ".pdf"
+    return name
 
 
-def _slugify(model: str) -> str:
-    return _SAFE_NAME.sub("_", model.strip())
+def _slug_component(s: str) -> str:
+    """Folder-safe component (ASCII-only). Used for `section` / `category_slug`."""
+    cleaned = _SAFE_SLUG.sub("_", (s or "").strip())
+    return cleaned or "unknown"
 
 
 class PDFDownloader:
@@ -42,10 +90,23 @@ class PDFDownloader:
         self.cfg = get_config()
         self.client = client or PoliteClient()
 
-    def download_for(self, model: str, title: str, url: str) -> bool:
+    # ------------------------------------------------------------------------
+    # Primary API: crawler calls this with section + category + product.
+    # ------------------------------------------------------------------------
+    def download_brochure(
+        self,
+        *,
+        section: str,
+        category_slug: str,
+        model: str,
+        title: str,
+        url: str,
+    ) -> bool:
         """
-        Download one PDF for a known product. Returns True if a NEW file was
-        written, False if the URL was already known and unchanged.
+        Download one brochure into `<pdf_dir>/<section>/<category_slug>/<filename>`.
+
+        Returns True if a NEW file was written. Returns False on skip (file
+        already present), invalid product, or download failure.
         """
         db = get_db()
         with db.session() as s:
@@ -63,7 +124,10 @@ class PDFDownloader:
                 logger.debug("PDF already present: %s", existing.local_path)
                 return False
 
-            local_path = self._fetch_to_disk(model, url)
+            local_path = self._fetch_to_disk(
+                section=section, category_slug=category_slug,
+                title=title, url=url,
+            )
             if local_path is None:
                 return False
             sha = self._sha256(local_path)
@@ -88,10 +152,21 @@ class PDFDownloader:
         return True
 
     # ---- helpers ------------------------------------------------------------
-    def _fetch_to_disk(self, model: str, url: str) -> Path | None:
-        dest_dir = self.cfg.storage.pdf_dir / _slugify(model)
+    def _fetch_to_disk(
+        self,
+        *,
+        section: str,
+        category_slug: str,
+        title: str,
+        url: str,
+    ) -> Path | None:
+        dest_dir = (
+            self.cfg.storage.pdf_dir
+            / _slug_component(section)
+            / _slug_component(category_slug)
+        )
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / _safe_filename(url)
+        dest = dest_dir / _readable_filename(title, url)
 
         try:
             with self.client.stream("GET", url) as resp:
@@ -106,7 +181,7 @@ class PDFDownloader:
             if dest.exists():
                 dest.unlink(missing_ok=True)
             return None
-        logger.info("Downloaded %s -> %s", url, dest)
+        logger.info("Downloaded %s", dest)
         return dest
 
     @staticmethod
