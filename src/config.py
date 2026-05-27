@@ -76,6 +76,13 @@ class SelectorConfig:
 
 
 @dataclass
+class ProjectsConfig:
+    work_dir: Path
+    skip_top_level: list[str]
+    skip_files: list[str]
+
+
+@dataclass
 class SchedulerConfig:
     enabled: bool
     crawl_cron: str
@@ -106,6 +113,7 @@ class AppConfig:
     scheduler: SchedulerConfig
     logging: LoggingConfig
     secrets: Secrets
+    projects: ProjectsConfig
 
     # --- convenience helpers --------------------------------------------------
     def task(self, name: str) -> LLMTaskConfig:
@@ -214,6 +222,13 @@ def _build(raw: dict[str, Any]) -> AppConfig:
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
     )
 
+    p = raw.get("projects", {})
+    projects_cfg = ProjectsConfig(
+        work_dir=Path(os.getenv("PROJECTS_WORK_DIR") or p.get("work_dir", "D:/Work")),
+        skip_top_level=p.get("skip_top_level", []),
+        skip_files=p.get("skip_files", []),
+    )
+
     return AppConfig(
         llm=llm,
         storage=storage,
@@ -222,6 +237,7 @@ def _build(raw: dict[str, Any]) -> AppConfig:
         scheduler=scheduler,
         logging=logging_cfg,
         secrets=secrets,
+        projects=projects_cfg,
     )
 
 

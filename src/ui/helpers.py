@@ -284,6 +284,164 @@ def rematch_all_ui() -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+def scan_projects_ui() -> str:
+    """Walk work_dir and upsert projects + files."""
+    from ..projects import scan_projects
+
+    r = scan_projects()
+    return (
+        f"✅ **扫描完成** — `{r.work_dir}`\n\n"
+        f"- 人员目录: {r.assigners_seen}\n"
+        f"- 项目数: {r.projects_seen}  (新增 **{r.projects_new}**)\n"
+        f"- 文件数: {r.files_total}  (新增 **{r.files_new}**,已删 {r.files_removed})\n"
+    )
+
+
+def list_projects_md(assigner: str | None, status: str | None, customer: str | None) -> str:
+    """Render projects table as Markdown."""
+    from ..projects import list_projects
+
+    items = list_projects(
+        assigner=(assigner or None),
+        status=(status or None),
+        customer_like=(customer or None),
+    )
+    if not items:
+        return "_没有匹配的项目。先点上面的 `🔄 扫描` 按钮?_"
+
+    lines = [f"**共 {len(items)} 个项目**",
+             "",
+             "| ID | 状态 | 下发人 | 代码 | 全称 | 客户 | 文件数 | 终版 |",
+             "|---|---|---|---|---|---|---|---|"]
+    status_emoji = {
+        "进行中": "🟡 进行中", "中标": "🟢 中标",
+        "未中标": "🔴 未中标", "结案": "⚪ 结案",
+    }
+    for p in items:
+        lines.append(
+            f"| {p.id} | {status_emoji.get(p.status, p.status)} | "
+            f"{p.assigner} | `{p.name}` | "
+            f"{(p.display_name or '')[:40]} | "
+            f"{p.customer or '-'} | {p.file_count} | "
+            f"{'✅' if p.has_final_quote else ''} |"
+        )
+    return "\n".join(lines)
+
+
+def list_project_choices() -> list[tuple[str, str]]:
+    """For populating the project-picker dropdown.
+
+    Returns a list of (label, value) tuples. Value is the project id.
+    """
+    from ..projects import list_projects
+
+    items = list_projects()
+    return [
+        (f"[{p.id}] {p.assigner} / {p.name}"
+         + (f"  ({p.customer})" if p.customer else ""),
+         str(p.id))
+        for p in items
+    ]
+
+
+def show_project_md(project_id: str | None) -> str:
+    """Render one project's full details."""
+    if not project_id:
+        return "_左侧选一个项目查看详情。_"
+
+    from ..projects import get_project
+
+    found = get_project(project_id)
+    if not found:
+        return f"❌ 找不到项目 `{project_id}`。"
+    proj, files = found
+
+    status_emoji = {"进行中": "🟡", "中标": "🟢", "未中标": "🔴", "结案": "⚪"}
+    kind_label = {
+        "quote": "📊 报价单", "requirement": "📋 需求",
+        "config": "⚙️ 配置", "image": "🖼️ 图片", "other": "📄 其他",
+    }
+
+    lines = [
+        f"## {status_emoji.get(proj.status, '')} `{proj.name}` <small>(id={proj.id})</small>",
+        f"**{proj.display_name or '(无全称)'}**",
+        "",
+        f"- 状态: **{proj.status}**",
+        f"- 下发人: `{proj.assigner}`",
+        f"- 客户: {proj.customer or '_(未填)_'}",
+        f"- 文件夹: `{proj.folder_path}`",
+        f"- 更新时间: {proj.updated_at.strftime('%Y-%m-%d %H:%M')}",
+    ]
+    if proj.notes:
+        lines += ["", f"> {proj.notes}"]
+
+    if files:
+        lines += ["", f"### 📂 文件 ({len(files)})", "",
+                  "| 类型 | 终版 | 文件名 | 大小 | 修改 |",
+                  "|---|---|---|---|---|"]
+        for f in files:
+            size_kb = f"{f.size_bytes/1024:.1f} KB" if f.size_bytes else "-"
+            mod = f.modified_at.strftime("%Y-%m-%d %H:%M") if f.modified_at else "-"
+            lines.append(
+                f"| {kind_label.get(f.kind, f.kind)} | "
+                f"{'✅' if f.is_final else ''} | "
+                f"`{f.name}` | {size_kb} | {mod} |"
+            )
+    else:
+        lines += ["", "_(项目文件夹空)_"]
+
+    return "\n".join(lines)
+
+
+def update_project_status_ui(project_id: str | None, new_status: str) -> str:
+    if not project_id:
+        return "_先选一个项目。_"
+    from ..projects import set_status
+    try:
+        proj = set_status(int(project_id), new_status)
+    except ValueError as exc:
+        return f"❌ {exc}"
+    if proj is None:
+        return f"❌ 找不到项目 id={project_id}"
+    return f"✅ 已将 `{proj.name}` 状态更新为 **{new_status}**"
+
+
+def update_project_customer_ui(project_id: str | None, customer: str) -> str:
+    if not project_id:
+        return "_先选一个项目。_"
+    from ..projects import set_customer
+    proj = set_customer(int(project_id), customer)
+    if proj is None:
+        return f"❌ 找不到项目 id={project_id}"
+    return f"✅ 客户已更新为 `{proj.customer or '(已清空)'}`"
+
+
+def update_project_notes_ui(project_id: str | None, notes: str) -> str:
+    if not project_id:
+        return "_先选一个项目。_"
+    from ..projects import set_notes
+    proj = set_notes(int(project_id), notes)
+    if proj is None:
+        return f"❌ 找不到项目 id={project_id}"
+    return "✅ 备注已保存"
+
+
+def open_project_ui(project_id: str | None) -> str:
+    if not project_id:
+        return "_先选一个项目。_"
+    from ..projects import get_project, open_in_explorer
+    found = get_project(int(project_id))
+    if not found:
+        return f"❌ 找不到项目 id={project_id}"
+    proj, _ = found
+    if open_in_explorer(proj.folder_path):
+        return f"✅ 已唤起文件管理器: `{proj.folder_path}`"
+    return f"❌ 打不开: `{proj.folder_path}`"
+
+
 __all__ = [
     "run_selection",
     "list_catalog_names",
@@ -291,4 +449,13 @@ __all__ = [
     "import_catalog_via_ui",
     "show_catalog_md",
     "rematch_all_ui",
+    # projects
+    "scan_projects_ui",
+    "list_projects_md",
+    "list_project_choices",
+    "show_project_md",
+    "update_project_status_ui",
+    "update_project_customer_ui",
+    "update_project_notes_ui",
+    "open_project_ui",
 ]

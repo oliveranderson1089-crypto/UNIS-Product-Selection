@@ -9,8 +9,12 @@ from .models import (
     CatalogEntry,
     CatalogList,
     CrawlRecord,
+    DEFAULT_PROJECT_STATUS,
+    PROJECT_STATUSES,
     Product,
     ProductPDF,
+    Project,
+    ProjectFile,
 )
 
 __all__ = [
@@ -20,6 +24,10 @@ __all__ = [
     "CrawlRecord",
     "CatalogList",
     "CatalogEntry",
+    "Project",
+    "ProjectFile",
+    "PROJECT_STATUSES",
+    "DEFAULT_PROJECT_STATUS",
     "get_db",
     "init_schema",
 ]

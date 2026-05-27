@@ -170,7 +170,79 @@ class CatalogEntry(Base):
     catalog:        Mapped[CatalogList] = relationship(back_populates="entries")
 
 
+# ---------------------------------------------------------------------------
+# Projects (售前项目跟踪)
+# ---------------------------------------------------------------------------
+# A "project" maps 1:1 to a folder under the configured `work_dir`, typically:
+#   D:\Work\紫光恒越\日常工作\<assigner>\<project_code_or_name>\
+# where `assigner` is the person who handed the deal to you (also acts as
+# our "owner" of record, since you do the work). Files inside the project
+# folder (tender PDFs, requirement images, quote .xls exports) are tracked
+# as ProjectFile rows so the UI can show "what's in this project" without
+# re-scanning the disk every time.
+
+# Closed set of statuses — exposed by config for easy localization, but
+# the canonical Chinese strings live here so DB queries are consistent.
+PROJECT_STATUSES = ("进行中", "中标", "未中标", "结案")
+DEFAULT_PROJECT_STATUS = "进行中"
+
+
+class Project(Base):
+    __tablename__ = "projects"
+    __table_args__ = (
+        UniqueConstraint("assigner", "name", name="uq_project_per_assigner"),
+    )
+
+    id:            Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Short folder name as discovered on disk, e.g. "29JD" or "821中核环保"
+    name:          Mapped[str] = mapped_column(String(128), index=True)
+    # Long, descriptive name auto-derived from file names inside the folder
+    display_name:  Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Person who assigned the project (= the subfolder under work_dir)
+    assigner:      Mapped[str] = mapped_column(String(64), index=True)
+    # End customer — extractable from project name sometimes, otherwise manual
+    customer:      Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Absolute path to project folder
+    folder_path:   Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    status:        Mapped[str] = mapped_column(String(16), default=DEFAULT_PROJECT_STATUS, index=True)
+    notes:         Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at:    Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at:    Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow,
+    )
+
+    files:         Mapped[list["ProjectFile"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan",
+    )
+
+
+class ProjectFile(Base):
+    """A single file (quote / tender / requirement / other) inside a project."""
+
+    __tablename__ = "project_files"
+    __table_args__ = (
+        UniqueConstraint("project_id", "path", name="uq_file_per_project"),
+    )
+
+    id:           Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id:   Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True,
+    )
+    name:         Mapped[str] = mapped_column(String(256))       # file basename
+    path:         Mapped[str] = mapped_column(String(1024))      # absolute path
+    # Heuristic classification — "quote" / "requirement" / "config" / "other"
+    kind:         Mapped[str] = mapped_column(String(32), default="other", index=True)
+    is_final:     Mapped[bool] = mapped_column(Boolean, default=False)
+    size_bytes:   Mapped[int | None] = mapped_column(Integer, nullable=True)
+    modified_at:  Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sha256:       Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    project:      Mapped[Project] = relationship(back_populates="files")
+
+
 __all__ = [
     "Base", "Product", "ProductPDF", "CrawlRecord",
     "CatalogList", "CatalogEntry",
+    "Project", "ProjectFile",
+    "PROJECT_STATUSES", "DEFAULT_PROJECT_STATUS",
 ]

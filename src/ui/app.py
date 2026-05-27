@@ -17,6 +17,7 @@ from __future__ import annotations
 import gradio as gr
 
 from .catalog_page import build_catalog_tab
+from .projects_page import build_projects_tab
 from .select_page import build_select_tab
 
 
@@ -68,17 +69,8 @@ def build_app() -> gr.Blocks:
         # ---- 名录管理 ---------------------------------------------------
         build_catalog_tab()
 
-        # ---- 项目占位 ---------------------------------------------------
-        with gr.Tab("📁 项目管理"):
-            gr.Markdown(
-                "## 项目管理 — Phase 4 占位\n\n"
-                "即将上线的能力:\n\n"
-                "- 扫描 `D:\\Work\\紫光恒越\\日常工作\\<人名>\\` 自动建项目\n"
-                "- 关联客户、负责人、状态(进行中 / 中标 / 未中标 / 结案)\n"
-                "- 每个项目下管理多个报价单版本(初版 → 调整版 → 终版)\n"
-                "- 一键归档 + 全文搜索历史项目\n\n"
-                "_目前请走 CLI:`python -m src.cli projects`(也是占位)_"
-            )
+        # ---- 项目管理 ---------------------------------------------------
+        build_projects_tab()
 
         # ---- 报价单占位 -------------------------------------------------
         with gr.Tab("📊 报价单编辑"):

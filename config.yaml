@@ -93,6 +93,21 @@ selector:
   # When in AI mode, how many products to pass to the LLM as context
   ai_context_top_n: 20
 
+# ---------- Projects ----------
+# Project = one sales/pre-sales opportunity. The scanner walks
+# work_dir/<assigner>/<project_code>/<files> and upserts a Project row
+# per project folder. Override paths per-machine via PROJECTS_WORK_DIR env var.
+projects:
+  work_dir: "D:/Work/紫光恒越/日常工作"
+  # Folder names to skip at the top level (e.g. shared notes, archives)
+  skip_top_level: []
+  # Filenames to skip everywhere (anywhere in the tree)
+  skip_files:
+    - "说明.txt"
+    - "Thumbs.db"
+    - ".DS_Store"
+    - "~$*"               # Microsoft Office lock files
+
 # ---------- Scheduler ----------
 scheduler:
   enabled: false              # Set true to run periodic updates
