@@ -1,71 +1,49 @@
 """
-CLI for product selection.
+Subcommand: `select` — product selection from free-form requirements.
 
-    python -m src.cli.select "48口万兆三层核心交换机"
-    python -m src.cli.select --doc requirements.docx
-    python -m src.cli.select --image spec.png --ai
-    python -m src.cli.select "国产化接入交换机 24口千兆 PoE" --ai --top 3
+    python -m src.cli select "48口万兆三层核心交换机"
+    python -m src.cli select --doc requirements.docx
+    python -m src.cli select --image spec.png --ai
+    python -m src.cli select "国产化接入交换机 24口千兆 PoE" --ai --top 3
+
+Backwards compatibility: `python -m src.cli.select "..."` still works.
 """
 
 from __future__ import annotations
 
-import logging
-import sys
 from pathlib import Path
 
-# Ensure Chinese output renders correctly on Windows consoles whose default
-# code page is CP936/GBK. Must run before Rich initializes its Console.
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:                                                   # noqa: BLE001
-        pass
-
 import click
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
 
+from ._common import console, setup_logging
 from ..config import get_config
 from ..requirement.schema import parse_requirement
 from ..requirement.rule_parser import _iter_field_lines
 from ..selector import AIMatcher, RuleMatcher
 from ..selector.base import MatchResult
 
-# Force a stable Unicode-capable console regardless of OS code page.
-console = Console(force_terminal=True, legacy_windows=False)
 
-
-def _setup_logging() -> None:
-    cfg = get_config()
-    level = getattr(logging, cfg.logging.level.upper(), logging.INFO)
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
-    if cfg.logging.file:
-        handlers.append(logging.FileHandler(cfg.logging.file, encoding="utf-8"))
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=handlers,
-        force=True,
-    )
-
-
+# ---------------------------------------------------------------------------
+# Rendering helpers (kept module-local; not part of the public API)
+# ---------------------------------------------------------------------------
 def _render_requirement(req) -> None:
+    from rich.panel import Panel
     body = "\n".join(_iter_field_lines(req)) or "[未解析到结构化字段]"
     console.print(Panel(body, title="解析后的需求", border_style="cyan"))
 
 
 def _render_results(results: list[MatchResult]) -> None:
+    from rich.panel import Panel
+    from rich.table import Table
+
     if not results:
-        console.print(Panel("[red]没有产品匹配该需求[/red]\n请检查目录是否已抓取,"
-                            "或放宽部分条件再试。", title="结果", border_style="red"))
+        console.print(Panel(
+            "[red]没有产品匹配该需求[/red]\n请检查目录是否已抓取,或放宽部分条件再试。",
+            title="结果", border_style="red"))
         return
 
-    tbl = Table(
-        title=f"推荐产品 Top {len(results)}",
-        show_header=True, header_style="bold magenta",
-    )
+    tbl = Table(title=f"推荐产品 Top {len(results)}",
+                show_header=True, header_style="bold magenta")
     tbl.add_column("#", style="dim", width=3)
     tbl.add_column("型号", style="bold")
     tbl.add_column("评分", justify="right")
@@ -81,12 +59,8 @@ def _render_results(results: list[MatchResult]) -> None:
         elif p.port_count:
             ports = f"{p.port_count}口"
         tbl.add_row(
-            str(i),
-            p.model,
-            f"{r.score:.2%}",
-            p.category or "-",
-            ports,
-            p.layer or "-",
+            str(i), p.model, f"{r.score:.2%}",
+            p.category or "-", ports, p.layer or "-",
             "✓" if p.is_domestic else "",
         )
     console.print(tbl)
@@ -96,27 +70,29 @@ def _render_results(results: list[MatchResult]) -> None:
         body_lines += [f"[yellow]⚠ {x}[/yellow]" for x in r.warnings]
         if r.product.page_url:
             body_lines.append(f"[dim]产品页:{r.product.page_url}[/dim]")
-        console.print(
-            Panel(
-                "\n".join(body_lines),
-                title=f"#{i}  {r.product.model}   评分 {r.score:.2%}",
-                border_style="green" if r.score >= 0.7 else "yellow",
-            )
-        )
+        console.print(Panel(
+            "\n".join(body_lines),
+            title=f"#{i}  {r.product.model}   评分 {r.score:.2%}",
+            border_style="green" if r.score >= 0.7 else "yellow",
+        ))
 
 
-@click.command()
+# ---------------------------------------------------------------------------
+# Click command — registered by main.py into the top-level group.
+# ---------------------------------------------------------------------------
+@click.command(name="select", help="根据需求(文本/文档/图片)推荐 UNIS 产品。")
 @click.argument("text", required=False)
-@click.option("--doc", "document", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+@click.option("--doc", "document",
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
               help="上传文档(PDF/DOCX/XLSX/TXT/CSV/MD)作为需求来源")
-@click.option("--image", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+@click.option("--image",
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
               help="上传图片作为需求来源(需 --ai 且配置 Claude key)")
 @click.option("--ai/--no-ai", default=None,
               help="是否启用 AI 模式(默认按 config.yaml 决定)")
 @click.option("--top", "top_k", type=int, default=None, help="返回 Top N 产品")
-def main(text, document, image, ai, top_k):
-    """根据需求选择 UNIS 产品。"""
-    _setup_logging()
+def cmd(text, document, image, ai, top_k):
+    setup_logging()
     cfg = get_config()
 
     if not (text or document or image):
@@ -124,7 +100,6 @@ def main(text, document, image, ai, top_k):
         raise SystemExit(2)
 
     if image and not ai:
-        # In rule mode we can't read images. Be loud about it.
         console.print(
             "[yellow]提示:图片输入需要 --ai 才能解析。当前忽略图片,仅按文本/文档解析。[/yellow]"
         )
@@ -142,15 +117,17 @@ def main(text, document, image, ai, top_k):
     _render_requirement(req)
 
     if req.is_empty():
-        console.print("[red]未能从输入中解析出可用约束。请尝试加上端口数、速率、层级等关键参数。[/red]")
+        console.print(
+            "[red]未能从输入中解析出可用约束。请尝试加上端口数、速率、层级等关键参数。[/red]"
+        )
         raise SystemExit(1)
 
     matcher = AIMatcher() if use_ai else RuleMatcher()
     with console.status(f"匹配产品中(引擎: {'AI' if use_ai else '规则'})..."):
         results = matcher.match(req, top_k=top_k)
-
     _render_results(results)
 
 
+# Back-compat: keep `python -m src.cli.select "..."` working
 if __name__ == "__main__":
-    main()
+    cmd()

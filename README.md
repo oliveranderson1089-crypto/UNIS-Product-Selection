@@ -43,43 +43,51 @@ copy .env.example .env
 ### 3. 初始化数据库 + 抓取真实产品
 
 ```powershell
-# 一次性建表
 python scripts/init_db.py
-
-# 冒烟抓取:只爬 5 个产品验证全链路 (~30 秒)
-python scripts/run_crawler.py --max 5
-
-# 等冒烟通过后,跑完整抓取 (~3 分钟,20+ 个交换机 + 彩页 + 规格)
-python scripts/run_crawler.py
+python -m src.cli crawl --max 5     # 冒烟抓取(~30 秒)
+python -m src.cli crawl              # 全量抓取(~20 分钟,13 个品类,400+ 产品)
+python -m src.cli inspect            # 查看抓取成果
 ```
 
 > 在 TLS 拦截代理(FlClash / 企业防火墙)下需要先 `set CRAWLER_VERIFY_SSL=false`,
 > 或者在 `config.yaml -> crawler.verify_ssl: false` 关掉证书校验。
 
-> 查看抓取成果:`python scripts/inspect_db.py`
-
 ### 4. 试一下
 
 ```powershell
+python -m src.cli --help            # 看所有子命令
+
 # 规则模式(无需 API key)
-python -m src.cli.select "48口万兆三层核心交换机,自主可控,冗余电源"
+python -m src.cli select "48口万兆三层核心交换机,自主可控,冗余电源"
 
 # 上传文档
-python -m src.cli.select --doc 客户需求.docx
+python -m src.cli select --doc 客户需求.docx
 
 # 上传图片(需要 AI + Claude key)
-python -m src.cli.select --image spec.png --ai
+python -m src.cli select --image spec.png --ai
 
 # AI 模式 + 自然语言
-python -m src.cli.select "我要一台便宜点的接入交换机给小办公室用" --ai
+python -m src.cli select "我要一台便宜点的接入交换机给小办公室用" --ai
 ```
+
+---
+
+## 即将上线的功能(架构已就位)
+
+| 子命令 | 用途 | Phase |
+|---|---|---|
+| `catalog import / list / show` | 政府名录管理(创新产品的子集) | 2 |
+| `ui` | Web 界面,创新型/通用型/名录型三入口 | 3 |
+| `projects new / list / show / status` | 项目/标书/报价单归档 | 4 |
+| `quote format / attach` | 报价单格式化(删列/换服务/改 logo) | 5 |
+
+参考 `ARCHITECTURE.md` 了解每个 Phase 的落地位置。
 
 ---
 
 ## 定时刷新
 
-抓取范围由 `config.yaml -> crawler.start_paths` 控制(默认只抓 "自主可控 / 交换机"
-分类)。要让它自动每周刷一次:
+抓取范围由 `config.yaml -> crawler.start_paths` 控制。要让它自动每周刷一次:
 
 ```yaml
 # config.yaml
@@ -96,13 +104,16 @@ python -m src.scheduler.jobs   # 阻塞型常驻进程
 
 ## 维护 / 调试工具
 
+日常使用统一从 `python -m src.cli <subcmd>` 入口。下面这些脚本是"裸金属"调试工具,
+站点改版/规则失效时方便定位问题。
+
 | 脚本 | 用途 |
 |---|---|
 | `scripts/init_db.py` | 建库(空表) |
-| `scripts/run_crawler.py [--max N]` | 抓爬一次,可限量 |
-| `scripts/inspect_db.py` | 一屏看完产品数 / 字段覆盖率 / 前 30 条数据 |
-| `scripts/debug_crawl.py <url>` | 探测一个页面,看选择器抓到了什么(站点改版时用) |
-| `scripts/debug_pdf.py <pdf or --product CODE>` | 打印一份彩页的正文 + 所有表格(规则没抓到字段时排查用) |
+| `scripts/debug_crawl.py <url>` | 探测一个产品/分类页,看选择器抓到了什么 |
+| `scripts/debug_pdf.py <pdf or --product CODE>` | 打印彩页的正文 + 所有表格,排查规格抽取问题 |
+| `scripts/run_crawler.py [--max N]` | 等价于 `python -m src.cli crawl`(保留兼容) |
+| `scripts/inspect_db.py` | 等价于 `python -m src.cli inspect`(保留兼容) |
 
 ---
 
