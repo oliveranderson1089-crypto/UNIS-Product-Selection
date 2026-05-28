@@ -114,6 +114,8 @@ def format_via_com(
                 report.rule_results.append(_remove_h3c_logo(wb))
             if "drop_internal_server_components" in enabled_rules:
                 report.rule_results.append(_drop_internal_server_components(wb))
+            if "swap_oem_service_line" in enabled_rules:
+                report.rule_results.append(_swap_oem_service_line(wb))
 
             output_path.parent.mkdir(parents=True, exist_ok=True)
             wb.SaveAs(str(output_path.resolve()), FileFormat=_XL_OPEN_XML_WORKBOOK)
@@ -131,6 +133,7 @@ KNOWN_RULES = (
     "fill_empty_model",
     "remove_h3c_logo",
     "drop_internal_server_components",
+    "swap_oem_service_line",
 )
 
 
@@ -452,6 +455,184 @@ def _filter_internal_lines(text: str) -> tuple[str, int]:
     return ";\n".join(kept) + ";", removed
 
 
+# ---------------------------------------------------------------------------
+# Rule: swap_oem_service_line
+# ---------------------------------------------------------------------------
+# H3C 配置器 inserts a default "OEM 服务" placeholder line on server quotes.
+# Per spec we replace that with the proper 3-year 7×24 NBD service (含硬盘
+# 介质保留) sourced from the IT产品BOM workbook. Two surfaces to update:
+#   - 价格汇总表  : substitute the OEM line in each row's 描述 cell
+#   - 价格明细清单: rewrite 5 cells (产品编码 / 产品型号 / 产品代码 /
+#                   描述 / 目录单价) on the OEM service line row
+_OEM_SERVICE_LINE = "OEM服务器3年5×9下一工作日现场支持(含硬盘不返还) -附专属服务"
+
+
+def _swap_oem_service_line(wb) -> ComRuleResult:
+    res = ComRuleResult(name="swap_oem_service_line")
+
+    if not _is_server_quote(wb):
+        res.warnings.append("不适用(非服务器报价或为 R3800FT20 G3),跳过")
+        return res
+
+    from ..config import get_config
+    from .bom_lookup import find_warranty, get_bom, resolve_bom_path
+
+    bom_path = resolve_bom_path(get_config().quotes.bom_path)
+    if bom_path is None:
+        res.warnings.append(
+            "BOM 文件没找到。请在 config.yaml 的 `quotes.bom_path` 设置 "
+            "IT产品BOM编码*.xlsx 的路径(支持通配)。"
+        )
+        return res
+    try:
+        bom_entries = get_bom(bom_path)
+    except Exception as exc:                                      # noqa: BLE001
+        res.warnings.append(f"读 BOM 失败 ({bom_path.name}): {exc}")
+        return res
+
+    # ---- Phase 1: 价格汇总表 description lines ---------------------------
+    # Also build a per-model BOM cache so Phase 2 can re-use the resolutions.
+    model_to_bom: dict[str, object] = {}
+    summary_count = _swap_in_price_main(
+        wb, bom_entries, model_to_bom, res,
+    )
+
+    # ---- Phase 2: 价格明细清单 line-item replacement ---------------------
+    detail_count = _swap_in_price_detail(
+        wb, bom_entries, model_to_bom, res,
+    )
+
+    if summary_count == 0 and detail_count == 0:
+        res.warnings.append("没找到任何 OEM 服务行(可能已被替换 / 或不是 CTO 服务器)")
+    else:
+        res.applied = True
+    return res
+
+
+def _swap_in_price_main(wb, bom_entries, model_to_bom, res) -> int:
+    """Swap the OEM line in each 价格汇总表 row's 描述 cell."""
+    from .bom_lookup import find_warranty
+
+    sheet = _try_get_sheet(wb, _SHEET_PRICE_MAIN)
+    if sheet is None:
+        return 0
+    header_row, headers = _find_header_row(sheet)
+    if header_row is None:
+        return 0
+    desc_col = headers.get("描述")
+    model_col = headers.get("产品型号")
+    if desc_col is None or model_col is None:
+        res.warnings.append("汇总表缺 描述/产品型号 列")
+        return 0
+
+    count = 0
+    for r in range(header_row + 1, _used_rows(sheet) + 1):
+        desc = sheet.Cells(r, desc_col).Value
+        model = sheet.Cells(r, model_col).Value
+        if not isinstance(desc, str) or not isinstance(model, str):
+            continue
+        if _OEM_SERVICE_LINE not in desc:
+            continue
+        model = model.strip()
+
+        entry = find_warranty(bom_entries, model, hdd_retained=True)
+        if entry is None:
+            res.warnings.append(
+                f"汇总 R{r}: BOM 里没找到 '{model} 3年7×24×NBD维保(含硬盘介质保留)'"
+            )
+            continue
+        model_to_bom[model] = entry
+
+        # Replace the OEM line with the BOM 对外中文描述 in-place.
+        sheet.Cells(r, desc_col).Value = desc.replace(
+            _OEM_SERVICE_LINE, entry.description,
+        )
+        res.changes.append(f"汇总 R{r}: {model} → '{entry.description[:50]}…'")
+        count += 1
+    return count
+
+
+def _swap_in_price_detail(wb, bom_entries, model_to_bom, res) -> int:
+    """
+    Find each OEM service row in 价格明细清单 and overwrite its 5 fields
+    from the BOM entry corresponding to the row's parent UNIS Server.
+    """
+    from .bom_lookup import find_warranty
+
+    sheet = _try_get_sheet(wb, _SHEET_PRICE_DETAIL)
+    if sheet is None:
+        return 0
+    header_row, headers = _find_header_row(sheet)
+    if header_row is None or "描述" not in headers:
+        return 0
+
+    desc_col = headers["描述"]
+    code_col = headers.get("产品编码")
+    pmodel_col = headers.get("产品型号")
+    pcode_col = headers.get("产品代码")
+    price_col = headers.get("目录单价(RMB)") or headers.get("目录单价")
+
+    # Walk top-down, tracking the most recent UNIS-Server section marker.
+    # H3C 配置器 puts these in column 2 (产品编码) in several formats:
+    #   "UNIS Server R4930 G7 #1"  (canonical, with spaces)
+    #   "UNISR4930G7 #1"           (compact, no spaces)
+    #   "R3935G7 #1"               (very compact)
+    # We extract the model-number digits and generation digit, then build
+    # the CANONICAL "UNIS Server R<NNNN> G<N>" string for BOM lookup.
+    current_server: str | None = None
+    server_marker_re = re.compile(
+        r"(?:UNIS[\s_]?(?:Server[\s_]?)?)?R(\d{3,4})[\s_-]?G(\d)",
+        re.IGNORECASE,
+    )
+    count = 0
+
+    for r in range(header_row + 1, _used_rows(sheet) + 1):
+        marker = sheet.Cells(r, 2).Value
+        if isinstance(marker, str):
+            m = server_marker_re.search(marker)
+            if m:
+                current_server = f"UNIS Server R{m.group(1)} G{m.group(2)}"
+
+        desc = sheet.Cells(r, desc_col).Value
+        if not isinstance(desc, str) or desc.strip() != _OEM_SERVICE_LINE:
+            # Note: we require EXACT match here. The cell in 价格明细清单
+            # contains just this line on its own, not as part of a bundle.
+            continue
+
+        if current_server is None:
+            res.warnings.append(f"明细 R{r}: OEM 行,但上方找不到 UNIS Server 标记")
+            continue
+
+        entry = model_to_bom.get(current_server) or find_warranty(
+            bom_entries, current_server, hdd_retained=True,
+        )
+        if entry is None:
+            res.warnings.append(
+                f"明细 R{r}: BOM 里没找到 '{current_server}' 的 7×24 NBD 维保"
+            )
+            continue
+        model_to_bom.setdefault(current_server, entry)
+
+        # Write the 5 fields. Each write is silent if the column doesn't
+        # exist on this particular configurator template.
+        if code_col:
+            sheet.Cells(r, code_col).Value = entry.code
+        if pmodel_col:
+            sheet.Cells(r, pmodel_col).Value = entry.model
+        if pcode_col:
+            sheet.Cells(r, pcode_col).Value = entry.ext_code
+        sheet.Cells(r, desc_col).Value = entry.description
+        if price_col:
+            sheet.Cells(r, price_col).Value = entry.list_price
+
+        res.changes.append(
+            f"明细 R{r}: {current_server} → {entry.code} (¥{entry.list_price:.0f})"
+        )
+        count += 1
+    return count
+
+
+# ---------------------------------------------------------------------------
 def _is_server_quote(wb) -> bool:
     """Scan 价格汇总表 for any cell mentioning a server model code."""
     sheet = _try_get_sheet(wb, _SHEET_PRICE_MAIN)

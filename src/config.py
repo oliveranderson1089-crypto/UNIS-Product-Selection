@@ -76,6 +76,12 @@ class SelectorConfig:
 
 
 @dataclass
+class QuotesConfig:
+    # Path or glob to IT产品BOM编码.xlsx used by swap_oem_service_line.
+    bom_path: str | None
+
+
+@dataclass
 class ProjectsConfig:
     work_dir: Path
     skip_top_level: list[str]
@@ -114,6 +120,7 @@ class AppConfig:
     logging: LoggingConfig
     secrets: Secrets
     projects: ProjectsConfig
+    quotes: QuotesConfig
 
     # --- convenience helpers --------------------------------------------------
     def task(self, name: str) -> LLMTaskConfig:
@@ -229,6 +236,11 @@ def _build(raw: dict[str, Any]) -> AppConfig:
         skip_files=p.get("skip_files", []),
     )
 
+    q = raw.get("quotes", {})
+    quotes_cfg = QuotesConfig(
+        bom_path=os.getenv("QUOTES_BOM_PATH") or q.get("bom_path"),
+    )
+
     return AppConfig(
         llm=llm,
         storage=storage,
@@ -238,6 +250,7 @@ def _build(raw: dict[str, Any]) -> AppConfig:
         logging=logging_cfg,
         secrets=secrets,
         projects=projects_cfg,
+        quotes=quotes_cfg,
     )
 
 
