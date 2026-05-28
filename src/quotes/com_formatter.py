@@ -346,16 +346,16 @@ _R3800FT20_RE = re.compile(r"R3800FT20", re.IGNORECASE)
 
 def _drop_internal_server_components(wb) -> ComRuleResult:
     """
-    Two-front cleanup of internal CTO components for server quotes:
+    Strip internal CTO component lines from 价格汇总表 描述 cells only.
 
-      1. 价格明细清单: DELETE the row entirely (the line item is gone).
-      2. 价格汇总表 描述 cell: STRIP matching lines from the multi-line
-         summary blob. (Each row's 描述 cell is one big semicolon-
-         separated string mirroring the line items; users see this in
-         the customer-facing summary, so leaving 假内存/PDU电源线/etc.
-         in there defeats the purpose of removing them from the detail.)
-
-    Both fronts use the same keyword list so behavior is consistent.
+    Why ONLY the summary, not 价格明细清单?
+      - 价格汇总表 描述 is the customer-facing pitch; the customer
+        shouldn't see 假内存/PDU电源线/导风罩/etc. cluttering the
+        bullet list.
+      - 价格明细清单 rows hold the actual prices that feed the SUM
+        formulas at the footer. Deleting rows there would silently
+        change the project total. Leave them alone — the customer
+        cares about the bottom line, not the BOM dump.
     """
     res = ComRuleResult(name="drop_internal_server_components")
 
@@ -363,47 +363,12 @@ def _drop_internal_server_components(wb) -> ComRuleResult:
         res.warnings.append("不适用于该文件(非服务器报价),跳过")
         return res
 
-    # ---- Front 1: 价格明细清单 row deletion -------------------------------
-    rows_deleted = _delete_internal_rows_in_detail(wb, res)
-
-    # ---- Front 2: 价格汇总表 描述 cell line-filtering ---------------------
     lines_stripped = _strip_internal_lines_in_summary(wb, res)
-
-    if rows_deleted == 0 and lines_stripped == 0:
+    if lines_stripped == 0:
         res.warnings.append("没识别到内部组件(可能已是干净的报价 / 或非 CTO 服务器)")
     else:
         res.applied = True
     return res
-
-
-def _delete_internal_rows_in_detail(wb, res: ComRuleResult) -> int:
-    """Delete BOM rows in 价格明细清单 whose 描述 matches a keyword."""
-    sheet = _try_get_sheet(wb, _SHEET_PRICE_DETAIL)
-    if sheet is None:
-        res.warnings.append(f"没有 '{_SHEET_PRICE_DETAIL}' sheet,跳过明细行删除")
-        return 0
-    header_row, headers = _find_header_row(sheet)
-    if header_row is None or "描述" not in headers:
-        res.warnings.append("明细清单没找到表头/描述列")
-        return 0
-
-    desc_col = headers["描述"]
-    last_row = _used_rows(sheet)
-    to_delete: list[tuple[int, str, str]] = []
-    for r in range(header_row + 1, last_row + 1):
-        desc = sheet.Cells(r, desc_col).Value
-        if not isinstance(desc, str):
-            continue
-        for kw in _INTERNAL_COMPONENT_KEYWORDS:
-            if kw in desc:
-                to_delete.append((r, kw, desc.replace("\n", " ")[:50]))
-                break
-
-    for r, _, _ in sorted(to_delete, key=lambda t: -t[0]):
-        sheet.Rows(r).Delete()
-    for r, kw, snippet in to_delete:
-        res.changes.append(f"明细 R{r}: 删除 ({kw}) — {snippet}…")
-    return len(to_delete)
 
 
 def _strip_internal_lines_in_summary(wb, res: ComRuleResult) -> int:
