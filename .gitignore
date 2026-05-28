@@ -41,5 +41,8 @@ data/pdfs/
 data/chroma/
 data/catalog.db
 data/*.db-journal
+data/*.xlsx
+data/*.xls
+data/~$*
 logs/
 *.log
