@@ -84,19 +84,37 @@ def launch(
     host: str = "127.0.0.1",
     port: int = 7860,
     share: bool = False,
+    open_browser: bool = True,
+    auth: list[tuple[str, str]] | None = None,
 ) -> None:
-    """Build + serve. Blocks until Ctrl-C."""
+    """Build + serve. Blocks until Ctrl-C.
+
+    `auth` is a list of (username, password) tuples — Gradio's native
+    format. When set, every visitor sees a browser-native login prompt
+    before the UI loads. Strongly recommended when combined with `share=True`
+    since the public URL would otherwise be open to anyone who guesses it.
+    """
     import logging
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    if auth:
+        logging.getLogger(__name__).info(
+            "Auth enabled for %d user(s): %s", len(auth),
+            ", ".join(u for u, _ in auth),
+        )
     app = build_app()
     app.launch(
         server_name=host,
         server_port=port,
         share=share,
         show_error=True,
+        # Auto-pop the default browser to the served URL once the server
+        # is ready. Gradio handles the timing itself — no need to sleep
+        # in a .bat wrapper.
+        inbrowser=open_browser,
+        auth=auth,
         theme=gr.themes.Soft(primary_hue="purple"),
         css=".container { max-width: 1200px; margin: auto; }",
     )
