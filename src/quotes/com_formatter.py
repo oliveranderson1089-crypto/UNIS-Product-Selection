@@ -324,26 +324,50 @@ _R3800FT20_RE = re.compile(r"R3800FT20", re.IGNORECASE)
 
 
 def _drop_internal_server_components(wb) -> ComRuleResult:
+    """
+    Two-front cleanup of internal CTO components for server quotes:
+
+      1. 价格明细清单: DELETE the row entirely (the line item is gone).
+      2. 价格汇总表 描述 cell: STRIP matching lines from the multi-line
+         summary blob. (Each row's 描述 cell is one big semicolon-
+         separated string mirroring the line items; users see this in
+         the customer-facing summary, so leaving 假内存/PDU电源线/etc.
+         in there defeats the purpose of removing them from the detail.)
+
+    Both fronts use the same keyword list so behavior is consistent.
+    """
     res = ComRuleResult(name="drop_internal_server_components")
 
     if not _is_server_quote(wb):
         res.warnings.append("不适用于该文件(非服务器报价),跳过")
         return res
 
+    # ---- Front 1: 价格明细清单 row deletion -------------------------------
+    rows_deleted = _delete_internal_rows_in_detail(wb, res)
+
+    # ---- Front 2: 价格汇总表 描述 cell line-filtering ---------------------
+    lines_stripped = _strip_internal_lines_in_summary(wb, res)
+
+    if rows_deleted == 0 and lines_stripped == 0:
+        res.warnings.append("没识别到内部组件(可能已是干净的报价 / 或非 CTO 服务器)")
+    else:
+        res.applied = True
+    return res
+
+
+def _delete_internal_rows_in_detail(wb, res: ComRuleResult) -> int:
+    """Delete BOM rows in 价格明细清单 whose 描述 matches a keyword."""
     sheet = _try_get_sheet(wb, _SHEET_PRICE_DETAIL)
     if sheet is None:
-        res.warnings.append(f"没有 '{_SHEET_PRICE_DETAIL}' sheet,跳过")
-        return res
-
+        res.warnings.append(f"没有 '{_SHEET_PRICE_DETAIL}' sheet,跳过明细行删除")
+        return 0
     header_row, headers = _find_header_row(sheet)
     if header_row is None or "描述" not in headers:
-        res.warnings.append("没找到表头或 '描述' 列,跳过")
-        return res
+        res.warnings.append("明细清单没找到表头/描述列")
+        return 0
 
     desc_col = headers["描述"]
     last_row = _used_rows(sheet)
-
-    # Collect first, delete bottom-up so row numbers stay valid.
     to_delete: list[tuple[int, str, str]] = []
     for r in range(header_row + 1, last_row + 1):
         desc = sheet.Cells(r, desc_col).Value
@@ -356,14 +380,62 @@ def _drop_internal_server_components(wb) -> ComRuleResult:
 
     for r, _, _ in sorted(to_delete, key=lambda t: -t[0]):
         sheet.Rows(r).Delete()
+    for r, kw, snippet in to_delete:
+        res.changes.append(f"明细 R{r}: 删除 ({kw}) — {snippet}…")
+    return len(to_delete)
 
-    if to_delete:
-        res.applied = True
-        for r, kw, snippet in to_delete:
-            res.changes.append(f"R{r}: 删除 ({kw}) — {snippet}…")
-    else:
-        res.warnings.append("没识别到内部组件行(可能已是干净的报价 / 或非 CTO 服务器)")
-    return res
+
+def _strip_internal_lines_in_summary(wb, res: ComRuleResult) -> int:
+    """
+    For every row in 价格汇总表, split its 描述 cell on ';' and drop the
+    lines containing internal-component keywords. Re-join the survivors
+    so the cell stays well-formed.
+    """
+    sheet = _try_get_sheet(wb, _SHEET_PRICE_MAIN)
+    if sheet is None:
+        res.warnings.append(f"没有 '{_SHEET_PRICE_MAIN}' sheet,跳过汇总描述清洗")
+        return 0
+    header_row, headers = _find_header_row(sheet)
+    if header_row is None or "描述" not in headers:
+        res.warnings.append("汇总表没找到表头/描述列")
+        return 0
+
+    desc_col = headers["描述"]
+    last_row = _used_rows(sheet)
+    total_removed = 0
+    for r in range(header_row + 1, last_row + 1):
+        desc = sheet.Cells(r, desc_col).Value
+        if not isinstance(desc, str) or not desc.strip():
+            continue
+        cleaned, removed = _filter_internal_lines(desc)
+        if removed > 0:
+            sheet.Cells(r, desc_col).Value = cleaned
+            res.changes.append(f"汇总 R{r}: 描述里删 {removed} 行内部组件")
+            total_removed += removed
+    return total_removed
+
+
+def _filter_internal_lines(text: str) -> tuple[str, int]:
+    """
+    Split on ';', filter out internal-component lines, rejoin.
+
+    Returns (cleaned_text, removed_count). Preserves the original
+    "<line>;<newline>" formatting style on output.
+    """
+    # H3C 配置器 uses ';' as line separator, often followed by a newline.
+    parts = [p.strip() for p in re.split(r";\s*\n?", text)]
+    kept: list[str] = []
+    removed = 0
+    for part in parts:
+        if not part:
+            continue
+        if any(kw in part for kw in _INTERNAL_COMPONENT_KEYWORDS):
+            removed += 1
+            continue
+        kept.append(part)
+    if not kept:
+        return text, 0     # don't blank the cell, leave as-is
+    return ";\n".join(kept) + ";", removed
 
 
 def _is_server_quote(wb) -> bool:
