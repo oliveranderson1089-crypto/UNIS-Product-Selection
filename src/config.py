@@ -237,9 +237,13 @@ def _build(raw: dict[str, Any]) -> AppConfig:
     )
 
     q = raw.get("quotes", {})
-    quotes_cfg = QuotesConfig(
-        bom_path=os.getenv("QUOTES_BOM_PATH") or q.get("bom_path"),
-    )
+    raw_bom_path = os.getenv("QUOTES_BOM_PATH") or q.get("bom_path")
+    # Resolve relative paths (and relative glob patterns) against the
+    # project root, so `data/References/IT产品BOM编码*.xlsx` works no
+    # matter what CWD the user invoked the CLI from.
+    if raw_bom_path and not Path(raw_bom_path).is_absolute():
+        raw_bom_path = str(PROJECT_ROOT / raw_bom_path)
+    quotes_cfg = QuotesConfig(bom_path=raw_bom_path)
 
     return AppConfig(
         llm=llm,

@@ -97,9 +97,10 @@ selector:
 quotes:
   # Path to IT产品BOM编码.xlsx — used to swap the default OEM service
   # line in server quotes with the proper "3年7×24×NBD维保" entry.
-  # Glob patterns are supported (most recent file wins) so dropping a
-  # new monthly BOM into the same folder Just Works.
-  bom_path: "D:/ComputerFiles/Downloads/IT产品BOM编码*.xlsx"
+  # Glob patterns supported (most recent file wins by mtime), so just
+  # drop new monthly BOM files into the folder below and the tool
+  # auto-picks them up — no config edit needed.
+  bom_path: "data/References/IT产品BOM编码*.xlsx"
 
 # ---------- Projects ----------
 # Project = one sales/pre-sales opportunity. The scanner walks

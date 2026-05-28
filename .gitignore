@@ -44,5 +44,7 @@ data/*.db-journal
 data/*.xlsx
 data/*.xls
 data/~$*
+# BOM reference files (user-provided, may contain proprietary catalog data)
+data/References/
 logs/
 *.log
