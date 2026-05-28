@@ -307,10 +307,24 @@ def _remove_h3c_logo(wb) -> ComRuleResult:
 # Rule: drop_internal_server_components
 # ---------------------------------------------------------------------------
 _INTERNAL_COMPONENT_KEYWORDS = (
+    # ---- originally curated from 动力院 R4930 G7 brick set ----------------
     "假内存模块", "硬盘背板模块", "PCIe5.0 FHHL", "Riser1/2模块",
     "PDU电源线", "墙插交流电源线", "iFIST模块", "滚珠短距滑轨", "滑轨",
     "导风罩模块", "OCP专用导风罩", "内部直流电源线", "AUX信号线",
     "PCIe电缆", "SAS电缆", "超级电容模块", "Flash掉电保护模块",
+    # ---- added per R3935 G7 / R5330 G7 sightings -------------------------
+    "AUX信号电缆",          # spelling variant of AUX信号线
+    "风扇模块",             # e.g. "4U 8056风扇模块(CTO&BTO)" — standalone CTO row.
+                            # Safe: main mainboard rows say "8056风扇*4" not
+                            # "风扇模块".
+    "散热器模块",           # e.g. "2U L型T型热管散热器模块(SL2)(CMCTO)"
+                            # Safe: mainboard descriptions say "散热器*2" not
+                            # "散热器模块".
+    "BMC管理板",            # e.g. "HDM3 AST2600 BMC管理板模块"
+                            # Safe: mainboard rows say "AST2600 BMC" without
+                            # "管理板".
+    "GPU Switch计算模块",   # e.g. "R5330 G7 8GPU Switch计算模块"
+    "硬盘扩展模块",         # e.g. "R5300 G6 12LFF硬盘扩展模块"
 )
 
 # Detects rows where 价格汇总表 references a server (R4930, R3935, etc.)
