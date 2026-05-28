@@ -102,6 +102,12 @@ quotes:
   # auto-picks them up — no config edit needed.
   bom_path: "data/References/IT产品BOM编码*.xlsx"
 
+  # Path to "R3800FT20 G3配置模板*.xlsx" (the 已选型 version) — used to
+  # fill the R3800FT20 G3 server section with per-component breakdown.
+  # Glob supported; files with "已选" in the name are preferred over the
+  # bare template skeleton.
+  r3800ft20_template_path: "data/References/R3800FT20 G3配置模板*.xlsx"
+
 # ---------- Projects ----------
 # Project = one sales/pre-sales opportunity. The scanner walks
 # work_dir/<assigner>/<project_code>/<files> and upserts a Project row

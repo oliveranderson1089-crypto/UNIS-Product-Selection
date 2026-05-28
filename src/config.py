@@ -79,6 +79,8 @@ class SelectorConfig:
 class QuotesConfig:
     # Path or glob to IT产品BOM编码.xlsx used by swap_oem_service_line.
     bom_path: str | None
+    # Path or glob to R3800FT20 G3配置模板*.xlsx used by fill_r3800ft20_template.
+    r3800ft20_template_path: str | None
 
 
 @dataclass
@@ -237,13 +239,20 @@ def _build(raw: dict[str, Any]) -> AppConfig:
     )
 
     q = raw.get("quotes", {})
-    raw_bom_path = os.getenv("QUOTES_BOM_PATH") or q.get("bom_path")
-    # Resolve relative paths (and relative glob patterns) against the
-    # project root, so `data/References/IT产品BOM编码*.xlsx` works no
-    # matter what CWD the user invoked the CLI from.
-    if raw_bom_path and not Path(raw_bom_path).is_absolute():
-        raw_bom_path = str(PROJECT_ROOT / raw_bom_path)
-    quotes_cfg = QuotesConfig(bom_path=raw_bom_path)
+
+    def _resolve_quote_path(env_name: str, key: str) -> str | None:
+        """Pick env-var override → yaml key, resolve relative against PROJECT_ROOT."""
+        v = os.getenv(env_name) or q.get(key)
+        if v and not Path(v).is_absolute():
+            v = str(PROJECT_ROOT / v)
+        return v
+
+    quotes_cfg = QuotesConfig(
+        bom_path=_resolve_quote_path("QUOTES_BOM_PATH", "bom_path"),
+        r3800ft20_template_path=_resolve_quote_path(
+            "QUOTES_R3800FT20_TEMPLATE_PATH", "r3800ft20_template_path",
+        ),
+    )
 
     return AppConfig(
         llm=llm,

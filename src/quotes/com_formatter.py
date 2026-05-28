@@ -116,6 +116,8 @@ def format_via_com(
                 report.rule_results.append(_drop_internal_server_components(wb))
             if "swap_oem_service_line" in enabled_rules:
                 report.rule_results.append(_swap_oem_service_line(wb))
+            if "fill_r3800ft20_template" in enabled_rules:
+                report.rule_results.append(_fill_r3800ft20_template(wb))
 
             output_path.parent.mkdir(parents=True, exist_ok=True)
             wb.SaveAs(str(output_path.resolve()), FileFormat=_XL_OPEN_XML_WORKBOOK)
@@ -134,6 +136,7 @@ KNOWN_RULES = (
     "remove_h3c_logo",
     "drop_internal_server_components",
     "swap_oem_service_line",
+    "fill_r3800ft20_template",
 )
 
 
@@ -630,6 +633,241 @@ def _swap_in_price_detail(wb, bom_entries, model_to_bom, res) -> int:
         )
         count += 1
     return count
+
+
+# ---------------------------------------------------------------------------
+# Rule: fill_r3800ft20_template
+# ---------------------------------------------------------------------------
+# R3800FT20 G3 is a fault-tolerant server H3C 配置器 exports as a single
+# bundled CTO row. Customers want to see a per-component breakdown of
+# what's inside the bundle, so the user maintains an external template
+# Excel that lists all CTO components, then marks 数量 for the ones they
+# selected. This rule reads that template and replaces the bundle row
+# with the breakdown.
+#
+# Two surfaces (same as swap_oem_service_line):
+#   - 价格汇总表 描述 cell: replace with template descriptions joined by ;
+#   - 价格明细清单 R3800FT20G3 section: resize to N template rows, copy
+#     data cells from template, preserve per-row formulas via FillDown
+_R3800FT20_MODEL = "UNIS Server R3800FT20 G3"
+_R3800FT20_SECTION_RE = re.compile(r"R3800FT20\s*G3\s*#\d+", re.IGNORECASE)
+# Footer markers — first cell whose 描述 or 产品编码 matches signals the
+# bottom of the data section in 价格明细清单.
+_FT20_FOOTER_DESCS = frozenset({"单台", "数量"})
+_FT20_FOOTER_CODES = frozenset({"小计", "配置组小计", "总计"})
+
+
+def _fill_r3800ft20_template(wb) -> ComRuleResult:
+    res = ComRuleResult(name="fill_r3800ft20_template")
+
+    if not _contains_r3800ft20(wb):
+        res.warnings.append("不适用(报价不含 R3800FT20 G3),跳过")
+        return res
+
+    from ..config import get_config
+    from .r3800ft20_template import load_template, resolve_template_path
+
+    template_path = resolve_template_path(get_config().quotes.r3800ft20_template_path)
+    if template_path is None:
+        res.warnings.append(
+            "找不到 R3800FT20 G3 配置模板。在 config.yaml 里设 "
+            "`quotes.r3800ft20_template_path` 指向 'R3800FT20 G3配置模板*.xlsx'。"
+        )
+        return res
+
+    try:
+        items = load_template(template_path)
+    except Exception as exc:                                      # noqa: BLE001
+        res.warnings.append(f"读模板失败 ({template_path.name}): {exc}")
+        return res
+    if not items:
+        res.warnings.append(
+            f"模板 {template_path.name} 里没有任何 数量>0 的行 — 没什么可填的"
+        )
+        return res
+
+    res.changes.append(f"模板: {template_path.name}  ({len(items)} 项)")
+
+    # Phase 1 + Phase 2 are independent — neither aborts the other.
+    summary_updated = _ft20_update_summary_desc(wb, items, res)
+    detail_updated = _ft20_replace_detail_section(wb, items, res)
+
+    res.applied = summary_updated or detail_updated
+    return res
+
+
+def _contains_r3800ft20(wb) -> bool:
+    """True if 价格汇总表 has a row with 产品型号 mentioning R3800FT20."""
+    sheet = _try_get_sheet(wb, _SHEET_PRICE_MAIN)
+    if sheet is None:
+        return False
+    header_row, headers = _find_header_row(sheet)
+    if header_row is None or "产品型号" not in headers:
+        return False
+    model_col = headers["产品型号"]
+    for r in range(header_row + 1, _used_rows(sheet) + 1):
+        v = sheet.Cells(r, model_col).Value
+        if isinstance(v, str) and "R3800FT20" in v:
+            return True
+    return False
+
+
+def _ft20_update_summary_desc(wb, items, res) -> bool:
+    """Replace the 描述 cell of the FT20 row in 价格汇总表 with template desc."""
+    sheet = _try_get_sheet(wb, _SHEET_PRICE_MAIN)
+    if sheet is None:
+        return False
+    header_row, headers = _find_header_row(sheet)
+    if header_row is None:
+        return False
+    model_col = headers.get("产品型号")
+    desc_col = headers.get("描述")
+    if model_col is None or desc_col is None:
+        res.warnings.append("汇总表缺 产品型号 / 描述 列")
+        return False
+
+    new_desc = ";\n".join(item.description for item in items) + ";"
+    updated = False
+    for r in range(header_row + 1, _used_rows(sheet) + 1):
+        model = sheet.Cells(r, model_col).Value
+        if not isinstance(model, str) or "R3800FT20" not in model:
+            continue
+        sheet.Cells(r, desc_col).Value = new_desc
+        res.changes.append(f"汇总 R{r}: 描述写入 {len(items)} 项 (来自模板)")
+        updated = True
+    if not updated:
+        res.warnings.append("汇总表没找到 R3800FT20 行")
+    return updated
+
+
+def _ft20_replace_detail_section(wb, items, res) -> bool:
+    """
+    Resize the R3800FT20G3 BOM section in 价格明细清单 to N template
+    rows. Per-row formulas (单价 / 折扣 / 总价 / 目录总价) survive via
+    Range.FillDown(), so the existing row's formula scaffolding is
+    propagated to new rows automatically.
+    """
+    sheet = _try_get_sheet(wb, _SHEET_PRICE_DETAIL)
+    if sheet is None:
+        res.warnings.append("没有 价格明细清单 sheet,跳过明细填充")
+        return False
+
+    header_row, headers = _find_header_row(sheet)
+    if header_row is None:
+        return False
+    desc_col = headers.get("描述")
+    if desc_col is None:
+        res.warnings.append("明细清单缺 描述 列")
+        return False
+
+    code_col = headers.get("产品编码")
+    model_col = headers.get("产品型号")
+    pcode_col = headers.get("产品代码")
+    qty_col = headers.get("数量")
+    price_col = headers.get("目录单价(RMB)") or headers.get("目录单价")
+    last_col = max(headers.values())
+
+    # ---- Locate the FT20 section -----------------------------------------
+    # The H3C 配置器 puts a subheader row with "<group> #N" in col-2 just
+    # above the data rows. There may be TWO matching rows (the parent
+    # group "1 | 服务器" line above, and the sub-group "1_1 | R3800FT20G3
+    # #1"). We want the SUB-group line — it's the one immediately above
+    # the actual BOM data.
+    subheader_r = None
+    for r in range(header_row + 1, _used_rows(sheet) + 1):
+        v = sheet.Cells(r, 2).Value
+        if isinstance(v, str) and _R3800FT20_SECTION_RE.search(v):
+            # Match the subheader specifically: col-1 has a "1_1"-style ID.
+            col1 = sheet.Cells(r, 1).Value
+            if col1 is not None and "_" in str(col1):
+                subheader_r = r
+                break
+    if subheader_r is None:
+        res.warnings.append("明细清单没找到 R3800FT20G3 #N 子段头")
+        return False
+
+    first_data_r = subheader_r + 1
+
+    # Footer: first row at-or-below first_data_r whose 描述/产品编码 hits
+    # one of the section-end markers.
+    footer_r = None
+    for r in range(first_data_r, _used_rows(sheet) + 1):
+        v_desc = sheet.Cells(r, desc_col).Value
+        v_code = sheet.Cells(r, 2).Value
+        if isinstance(v_desc, str) and v_desc.strip() in _FT20_FOOTER_DESCS:
+            footer_r = r; break
+        if isinstance(v_code, str) and v_code.strip() in _FT20_FOOTER_CODES:
+            footer_r = r; break
+    if footer_r is None:
+        res.warnings.append("明细清单没找到 R3800FT20G3 段结尾")
+        return False
+
+    existing_count = footer_r - first_data_r
+    if existing_count <= 0:
+        res.warnings.append(f"R3800FT20G3 段没有数据行 (subheader R{subheader_r}, footer R{footer_r})")
+        return False
+
+    target_count = len(items)
+    diff = target_count - existing_count
+
+    # ---- Resize the section ----------------------------------------------
+    # COM constants we use here:
+    _xl_shift_down = -4121
+    if diff > 0:
+        # Insert `diff` rows BEFORE the footer so footer SUM formulas
+        # auto-extend their ranges to cover the new rows.
+        for _ in range(diff):
+            sheet.Rows(footer_r).Insert(Shift=_xl_shift_down)
+        footer_r += diff
+        # Newly inserted rows are blank; copy first_data_r's formulas/
+        # formats down into them so single-row formulas like
+        # `=H8*I8` become `=H9*I9`, `=H10*I10`, …
+        target_block = sheet.Range(
+            sheet.Cells(first_data_r, 1),
+            sheet.Cells(first_data_r + target_count - 1, last_col),
+        )
+        target_block.FillDown()
+    elif diff < 0:
+        # Delete (existing - target) rows from the END of the data range
+        # so we don't disturb the first row's formula template.
+        sheet.Range(
+            sheet.Cells(first_data_r + target_count, 1),
+            sheet.Cells(first_data_r + existing_count - 1, last_col),
+        ).EntireRow.Delete()
+        footer_r -= -diff
+
+    # ---- Write template data into each row -------------------------------
+    # We write VALUES into the data cells; FORMULA cells (单价 / 折扣 /
+    # 总价 / 目录总价) we leave alone so the FillDown'd formulas keep
+    # referencing this-row's data.
+    for i, item in enumerate(items):
+        r = first_data_r + i
+        if code_col:
+            sheet.Cells(r, code_col).Value = item.code
+        if model_col:
+            sheet.Cells(r, model_col).Value = item.model
+        if pcode_col:
+            sheet.Cells(r, pcode_col).Value = item.product_code
+        sheet.Cells(r, desc_col).Value = item.description
+        if qty_col:
+            sheet.Cells(r, qty_col).Value = item.qty
+
+        # 目录单价: prefer template's price; otherwise keep what FillDown
+        # propagated from the existing first row, BUT only for the first
+        # row (which is the bundle SKU 9801A27M and legitimately holds the
+        # bundle's total). Clear it on subsequent rows so we don't over-
+        # multiply the bundle price by N quantities.
+        if price_col:
+            if item.list_price is not None:
+                sheet.Cells(r, price_col).Value = item.list_price
+            elif i > 0:
+                sheet.Cells(r, price_col).Value = None
+
+    res.changes.append(
+        f"明细 R3800FT20G3: {existing_count} → {target_count} 行 "
+        f"(R{first_data_r}-R{first_data_r + target_count - 1})"
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
