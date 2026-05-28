@@ -158,17 +158,15 @@ def _excel_session() -> Iterator:
 # ---------------------------------------------------------------------------
 # Rule: clean_price_main (the big one)
 # ---------------------------------------------------------------------------
-# Per user's refined Q3 spec:
-#   1. Delete 产品名称
-#   2. Delete (the originally-empty) 客户版产品描述
-#   3. Rename 详细描述 → 客户版产品描述  (the rich text becomes customer-facing)
-#   4. Delete 要求提前报备周期
-#   5. Delete 订单准备周期
-# Plus presentational fixes that were also requested:
-#   6. Delete the project-title-with-date line above the 价格汇总表 heading
-#   7. Center-align the 价格汇总表 heading
-_COLUMNS_TO_DROP = ("产品名称", "客户版产品描述", "要求提前报备周期", "订单准备周期")
-_RENAME_COLUMN = ("详细描述", "客户版产品描述")
+# Per Q3 spec (confirmed): delete these 4 columns entirely from 价格汇总表.
+# Note: 客户版产品描述 stays (even though it's usually empty), and 详细描述
+# goes entirely — including its long-text content. Earlier this rule
+# tried to "rename 详细描述 → 客户版产品描述" to preserve the rich text;
+# the user explicitly rejected that — they want the column gone.
+# Plus presentational fixes:
+#   - Delete the project-title-with-date line above the 价格汇总表 heading
+#   - Center-align the 价格汇总表 heading
+_COLUMNS_TO_DROP = ("产品名称", "详细描述", "要求提前报备周期", "订单准备周期")
 
 
 def _clean_price_main(wb) -> ComRuleResult:
@@ -214,14 +212,6 @@ def _clean_price_main(wb) -> ComRuleResult:
 
     if not drop_targets:
         res.warnings.append(f"4 个目标列一个都没找到 — 表头可能是其他模板")
-
-    # Re-discover header positions after deletion, then rename.
-    _, headers = _find_header_row(sheet)
-    src_name, dst_name = _RENAME_COLUMN
-    if src_name in headers:
-        col_idx = headers[src_name]
-        sheet.Cells(header_row, col_idx).Value = dst_name
-        res.changes.append(f"重命名列 '{src_name}' → '{dst_name}' (列 {col_idx})")
 
     res.applied = bool(res.changes)
     return res
