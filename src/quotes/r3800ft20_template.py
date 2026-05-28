@@ -44,6 +44,7 @@ class TemplateItem:
     description: str           # 描述
     qty: float                 # 数量
     list_price: float | None   # 目录单价 (may be missing in some templates)
+    discount: float | None     # 折扣 (e.g. 1.0 = 100%; may be missing)
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +85,7 @@ def load_template(path: Path) -> list[TemplateItem]:
         pcode_col = headers.get("产品代码")
         desc_col = headers.get("描述")
         price_col = headers.get("目录单价(RMB)") or headers.get("目录单价")
+        discount_col = headers.get("折扣")
 
         items: list[TemplateItem] = []
         for r in range(header_r + 1, ws.max_row + 1):
@@ -104,6 +106,12 @@ def load_template(path: Path) -> list[TemplateItem]:
                 if isinstance(v, (int, float)) and v > 0:
                     list_price = float(v)
 
+            discount: float | None = None
+            if discount_col:
+                v = ws.cell(r, discount_col).value
+                if isinstance(v, (int, float)) and v > 0:
+                    discount = float(v)
+
             items.append(TemplateItem(
                 code=code,
                 model=_cell_str(ws, r, model_col),
@@ -111,6 +119,7 @@ def load_template(path: Path) -> list[TemplateItem]:
                 description=desc,
                 qty=float(qty),
                 list_price=list_price,
+                discount=discount,
             ))
     finally:
         wb.close()

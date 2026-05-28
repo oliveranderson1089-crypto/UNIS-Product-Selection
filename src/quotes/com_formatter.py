@@ -331,6 +331,7 @@ _INTERNAL_COMPONENT_KEYWORDS = (
                             # "管理板".
     "GPU Switch计算模块",   # e.g. "R5330 G7 8GPU Switch计算模块"
     "硬盘扩展模块",         # e.g. "R5300 G6 12LFF硬盘扩展模块"
+    "GPU假面板",            # e.g. "10 * R5300 G6 GPU假面板" — slot fillers
 )
 
 # Detects rows where 价格汇总表 references a server (R4930, R3935, etc.)
@@ -765,6 +766,10 @@ def _ft20_replace_detail_section(wb, items, res) -> bool:
     pcode_col = headers.get("产品代码")
     qty_col = headers.get("数量")
     price_col = headers.get("目录单价(RMB)") or headers.get("目录单价")
+    discount_col = headers.get("折扣")
+    unit_col = headers.get("单价(RMB)") or headers.get("单价")
+    total_col = headers.get("总价(RMB)") or headers.get("总价")
+    list_total_col = headers.get("目录总价(RMB)") or headers.get("目录总价")
     last_col = max(headers.values())
 
     # ---- Locate the FT20 section -----------------------------------------
@@ -837,9 +842,9 @@ def _ft20_replace_detail_section(wb, items, res) -> bool:
         footer_r -= -diff
 
     # ---- Write template data into each row -------------------------------
-    # We write VALUES into the data cells; FORMULA cells (单价 / 折扣 /
-    # 总价 / 目录总价) we leave alone so the FillDown'd formulas keep
-    # referencing this-row's data.
+    # Per-row formula cells (单价 / 总价 / 目录总价) are NEVER written —
+    # FillDown handled them and they reference this row's own data cells
+    # (which we overwrite below).
     for i, item in enumerate(items):
         r = first_data_r + i
         if code_col:
@@ -854,20 +859,59 @@ def _ft20_replace_detail_section(wb, items, res) -> bool:
 
         # 目录单价: prefer template's price; otherwise keep what FillDown
         # propagated from the existing first row, BUT only for the first
-        # row (which is the bundle SKU 9801A27M and legitimately holds the
-        # bundle's total). Clear it on subsequent rows so we don't over-
-        # multiply the bundle price by N quantities.
+        # row (which is the bundle SKU and legitimately holds the bundle
+        # total). Clear it on subsequent rows so we don't over-multiply
+        # the bundle price by N quantities.
         if price_col:
             if item.list_price is not None:
                 sheet.Cells(r, price_col).Value = item.list_price
             elif i > 0:
                 sheet.Cells(r, price_col).Value = None
 
+        # 折扣: copy from template when present (e.g. 1.0 = 100%). Leaves
+        # the existing default alone otherwise — H3C usually ships 1.0.
+        if discount_col and item.discount is not None:
+            sheet.Cells(r, discount_col).Value = item.discount
+
+    # ---- Rewrite footer SUM formulas to cover the new data range --------
+    # Excel doesn't auto-extend ranges when you insert rows BELOW the
+    # range (footer SUMs that started as `=SUM(J9:J9)` stay that way
+    # after we insert above the footer). So we explicitly rebuild them.
+    # NOTE: in Excel COM, cell.Value returns the COMPUTED value (a number);
+    # the formula string lives on cell.Formula. Reading .Value here would
+    # always fail the startswith("=SUM(") guard.
+    last_data_r = first_data_r + target_count - 1
+    summed = []
+    for label, col in (("总价", total_col), ("目录总价", list_total_col)):
+        if col is None:
+            continue
+        cell = sheet.Cells(footer_r, col)
+        existing_formula = cell.Formula
+        # Only rewrite cells that ALREADY hold a SUM-like formula —
+        # avoid accidentally turning a hard-coded value into a formula.
+        if isinstance(existing_formula, str) and \
+                existing_formula.upper().lstrip("=").startswith("SUM("):
+            col_letter = _column_letter(col)
+            cell.Formula = f"=SUM({col_letter}{first_data_r}:{col_letter}{last_data_r})"
+            summed.append(f"{label} 列")
+    if summed:
+        res.changes.append(f"明细 R{footer_r} (单台) 重算: {', '.join(summed)}")
+
     res.changes.append(
         f"明细 R3800FT20G3: {existing_count} → {target_count} 行 "
-        f"(R{first_data_r}-R{first_data_r + target_count - 1})"
+        f"(R{first_data_r}-R{last_data_r})"
     )
     return True
+
+
+def _column_letter(col_index: int) -> str:
+    """1 -> A, 27 -> AA, etc. Inline to avoid pulling in openpyxl utils."""
+    result = ""
+    n = col_index
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        result = chr(65 + rem) + result
+    return result
 
 
 # ---------------------------------------------------------------------------
