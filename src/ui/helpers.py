@@ -293,6 +293,8 @@ def format_quote_ui(
     skip_columns: bool,
     skip_model_fill: bool,
     skip_server_cleanup: bool,
+    skip_oem_swap: bool = False,
+    skip_ft20_template: bool = False,
 ) -> tuple[str, str | None]:
     """
     Gradio callback for quote format.
@@ -311,6 +313,8 @@ def format_quote_ui(
     if skip_columns: skip_names.add("drop_fixed_columns")
     if skip_model_fill: skip_names.add("fill_empty_model")
     if skip_server_cleanup: skip_names.add("drop_internal_server_components")
+    if skip_oem_swap: skip_names.add("swap_oem_service_line")
+    if skip_ft20_template: skip_names.add("fill_r3800ft20_template")
 
     rules = [r for r in DEFAULT_RULES if r.name not in skip_names]
     src = Path(input_path)

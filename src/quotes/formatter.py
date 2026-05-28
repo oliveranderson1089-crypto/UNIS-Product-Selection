@@ -110,6 +110,8 @@ _OPENPYXL_TO_COM = {
     "fill_empty_model":                 "fill_empty_model",
     "remove_h3c_logo":                  "remove_h3c_logo",
     "drop_internal_server_components":  "drop_internal_server_components",
+    "swap_oem_service_line":            "swap_oem_service_line",
+    "fill_r3800ft20_template":          "fill_r3800ft20_template",
 }
 
 

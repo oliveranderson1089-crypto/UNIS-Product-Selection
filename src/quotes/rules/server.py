@@ -114,4 +114,47 @@ class DropInternalServerComponents(QuoteRule):
         return None
 
 
-__all__ = ["DropInternalServerComponents", "INTERNAL_COMPONENT_KEYWORDS", "SERVER_MODEL_RE"]
+# ---------------------------------------------------------------------------
+# COM-only placeholders
+# ---------------------------------------------------------------------------
+# These two rules require Excel COM to preserve formulas while inserting
+# rows / rewriting service lines. They live in `com_formatter.py`. We
+# register stubs here so:
+#   1. They show up in DEFAULT_RULES (so the formatter actually enables
+#      them on the COM path)
+#   2. CLI --skip / UI checkboxes can target them by name
+#   3. On non-Windows / no-Excel systems the openpyxl path can warn
+#      clearly instead of silently doing nothing
+class _ComOnlyStub(QuoteRule):
+    """Base for rules implemented exclusively in `com_formatter.py`."""
+
+    def applies_to(self, wb: "Workbook", context: dict) -> bool:
+        # Only meaningful on the COM path. The formatter consults
+        # `applies_to` only on the openpyxl fallback path — there we want
+        # `apply` to run so it can emit a clear warning.
+        return True
+
+    def apply(self, wb: "Workbook", context: dict) -> RuleResult:
+        return RuleResult(
+            name=self.name,
+            warnings=["此规则需要 Excel COM(Windows + Office/WPS),当前走纯 Python 路径,已跳过"],
+        )
+
+
+class SwapOemServiceLine(_ComOnlyStub):
+    name = "swap_oem_service_line"
+    description = "R4930/R3935 G7:用 IT产品BOM 中的 7×24 NBD 维保行替换默认 OEM 服务行"
+
+
+class FillR3800FT20Template(_ComOnlyStub):
+    name = "fill_r3800ft20_template"
+    description = "R3800FT20 G3:按外部模板展开 BOM 行,保留公式与小计"
+
+
+__all__ = [
+    "DropInternalServerComponents",
+    "SwapOemServiceLine",
+    "FillR3800FT20Template",
+    "INTERNAL_COMPONENT_KEYWORDS",
+    "SERVER_MODEL_RE",
+]
