@@ -329,8 +329,13 @@ def format_quote_ui(
         "",
         f"- 输入: `{src.name}`",
         f"- 输出: `{out.name}` ({out.stat().st_size // 1024} KB)",
-        "",
     ]
+    if report.conversion_method:
+        emoji = "✨" if report.conversion_method == "com" else "⚠️"
+        lines.append(f"- {emoji} 转换: `.xls` → `.xlsx` (方式: `{report.conversion_method}`)")
+        for w in report.conversion_warnings:
+            lines.append(f"  - ⚠️ {w}")
+    lines.append("")
     for r in report.rule_results:
         emoji = "✅" if r.applied else ("➖" if not r.changes else "ℹ️")
         lines.append(f"### {emoji} `{r.name}`")
