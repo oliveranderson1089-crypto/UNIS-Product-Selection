@@ -19,6 +19,7 @@ import gradio as gr
 from .catalog_page import build_catalog_tab
 from .projects_page import build_projects_tab
 from .quote_page import build_quote_tab
+from .references_page import build_references_tab
 from .select_page import build_select_tab
 
 
@@ -75,6 +76,9 @@ def build_app() -> gr.Blocks:
 
         # ---- 报价单编辑 -------------------------------------------------
         build_quote_tab()
+
+        # ---- 参考文件管理 -----------------------------------------------
+        build_references_tab()
 
     return app
 

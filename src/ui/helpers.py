@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import io
 import logging
+import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -515,6 +517,204 @@ def open_project_ui(project_id: str | None) -> str:
     return f"❌ 打不开: `{proj.folder_path}`"
 
 
+# ---------------------------------------------------------------------------
+# References folder management (data/References/)
+# ---------------------------------------------------------------------------
+# This is where the quote rules look for support data:
+#   - IT产品BOM编码*.xlsx        — swap_oem_service_line lookup
+#   - R3800FT20 G3配置模板*.xlsx  — fill_r3800ft20_template
+#   - *.pdf                       — catalog source PDFs
+# The 参考文件管理 tab exposes basic CRUD on this directory.
+
+# Extensions we accept via the upload box. Anything else gets rejected
+# so users don't accidentally drop a stray Excel temp file (~$*.xlsx) or
+# a Word doc and wonder why nothing matches.
+_REFERENCE_ALLOWED_SUFFIXES = {".xlsx", ".xls", ".xlsm", ".pdf"}
+
+
+def _references_dir() -> Path:
+    from ..config import PROJECT_ROOT
+    return PROJECT_ROOT / "data" / "References"
+
+
+def _classify_reference(name: str) -> str:
+    """Friendly category label keyed off filename patterns."""
+    n = name
+    nlow = name.lower()
+    if "bom" in nlow:
+        return "📋 IT产品BOM"
+    if "r3800ft20" in nlow.replace(" ", ""):
+        return "🎯 FT20 模板(已选型)" if "已选" in n else "📐 FT20 模板(空)"
+    if "名录" in n or "承诺函" in n or nlow.endswith(".pdf"):
+        return "📄 名录/承诺函"
+    if nlow.endswith((".xlsx", ".xls", ".xlsm")):
+        return "📊 Excel"
+    return "📦 其他"
+
+
+def list_references_md() -> str:
+    """Markdown table of every file in data/References/."""
+    from ..config import get_config
+    from ..quotes.bom_lookup import resolve_bom_path
+    from ..quotes.r3800ft20_template import resolve_template_path
+
+    refs_dir = _references_dir()
+    if not refs_dir.exists():
+        return f"_目录不存在: `{refs_dir}`(上传第一份文件时会自动创建)_"
+
+    files = sorted(
+        [p for p in refs_dir.iterdir() if p.is_file()],
+        key=lambda p: -p.stat().st_mtime,
+    )
+    if not files:
+        return f"_`{refs_dir}` 是空的。下方面板上传第一份文件。_"
+
+    cfg = get_config()
+    active: set[Path] = set()
+    bom = resolve_bom_path(cfg.quotes.bom_path)
+    ft20 = resolve_template_path(cfg.quotes.r3800ft20_template_path)
+    if bom is not None:
+        active.add(bom.resolve())
+    if ft20 is not None:
+        active.add(ft20.resolve())
+
+    lines = [
+        f"### 📂 `data/References/` — 共 {len(files)} 份(按修改时间倒序)",
+        "",
+        "| 文件名 | 类型 | 大小 | 修改时间 | 生效 |",
+        "|---|---|---|---|---|",
+    ]
+    for p in files:
+        st = p.stat()
+        size_kb = st.st_size // 1024
+        mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+        kind = _classify_reference(p.name)
+        active_mark = "✅" if p.resolve() in active else ""
+        lines.append(
+            f"| `{p.name}` | {kind} | {size_kb} KB | {mtime} | {active_mark} |"
+        )
+    return "\n".join(lines)
+
+
+def list_reference_filenames() -> list[str]:
+    """For populating the delete-picker dropdown."""
+    refs_dir = _references_dir()
+    if not refs_dir.exists():
+        return []
+    return sorted([p.name for p in refs_dir.iterdir() if p.is_file()])
+
+
+def references_status_md() -> str:
+    """Show which exact file each rule will pick right now."""
+    from ..config import get_config
+    from ..quotes.bom_lookup import resolve_bom_path
+    from ..quotes.r3800ft20_template import resolve_template_path
+
+    cfg = get_config()
+    bom = resolve_bom_path(cfg.quotes.bom_path)
+    ft20 = resolve_template_path(cfg.quotes.r3800ft20_template_path)
+
+    def _line(label: str, p: Path | None, hint: str) -> str:
+        if p is None:
+            return (
+                f"- **{label}**: ❌ _没找到_  — 对应规则会跳过\n"
+                f"  - 期望路径: `{hint}`"
+            )
+        return f"- **{label}**: `{p.name}`"
+
+    return (
+        "#### 🎯 当前生效的参考文件\n\n"
+        + _line(
+            "OEM 维保 BOM (swap_oem_service_line)",
+            bom, cfg.quotes.bom_path or "(未配置)",
+        )
+        + "\n"
+        + _line(
+            "R3800FT20 模板 (fill_r3800ft20_template)",
+            ft20, cfg.quotes.r3800ft20_template_path or "(未配置)",
+        )
+    )
+
+
+def upload_reference_ui(uploaded_path: str | None) -> str:
+    """
+    Copy a Gradio-uploaded file into data/References/ under its original
+    name. Overwrites if a file with the same name already exists — by
+    design, since users typically replace BOM monthly under same filename
+    convention with a new date stamp.
+    """
+    if not uploaded_path:
+        return "❌ 请先选一份文件。"
+    src = Path(uploaded_path)
+    if not src.exists():
+        return f"❌ 找不到上传的临时文件: `{src}`"
+
+    if src.suffix.lower() not in _REFERENCE_ALLOWED_SUFFIXES:
+        allowed = " / ".join(sorted(_REFERENCE_ALLOWED_SUFFIXES))
+        return f"❌ 不支持的文件类型 `{src.suffix}`。允许的类型: {allowed}"
+
+    if src.name.startswith("~$"):
+        return "❌ 这是 Excel 临时锁文件(`~$` 开头),不要上传。"
+
+    refs_dir = _references_dir()
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    dest = refs_dir / src.name
+
+    existed = dest.exists()
+    try:
+        shutil.copy(src, dest)
+    except Exception as exc:                                          # noqa: BLE001
+        logger.exception("upload_reference copy failed")
+        return f"❌ 拷贝失败: `{exc}`"
+
+    # Invalidate the BOM cache so the new file gets picked up immediately
+    # without restarting the UI.
+    try:
+        from ..quotes.bom_lookup import _load_cached
+        _load_cached.cache_clear()
+    except Exception:                                                 # noqa: BLE001
+        pass
+
+    verb = "🔁 覆盖" if existed else "✅ 上传"
+    size_kb = dest.stat().st_size // 1024
+    return f"{verb}成功:`{dest.name}` ({size_kb} KB) → `data/References/`"
+
+
+def delete_reference_ui(filename: str | None, confirmed: bool) -> str:
+    """Permanently delete a file from data/References/. Requires confirm."""
+    if not filename:
+        return "_先在下拉里选一份文件。_"
+    if not confirmed:
+        return "⚠️ 删除前请先勾上「我确认要永久删除」。"
+
+    refs_dir = _references_dir().resolve()
+    target = (refs_dir / filename).resolve()
+
+    # Defense against path traversal — must resolve to a direct child of
+    # data/References/ AND it must exist as a regular file.
+    if target.parent != refs_dir:
+        return f"❌ 安全检查失败:`{filename}` 不在 References/ 下"
+    if not target.exists():
+        return f"❌ 文件不存在: `{filename}`"
+    if not target.is_file():
+        return f"❌ 不是文件: `{filename}`"
+
+    try:
+        target.unlink()
+    except Exception as exc:                                          # noqa: BLE001
+        logger.exception("delete_reference failed")
+        return f"❌ 删除失败: `{exc}`"
+
+    # Invalidate the BOM cache so a re-run picks the fallback file.
+    try:
+        from ..quotes.bom_lookup import _load_cached
+        _load_cached.cache_clear()
+    except Exception:                                                 # noqa: BLE001
+        pass
+
+    return f"✅ 已永久删除 `{filename}`"
+
+
 __all__ = [
     "run_selection",
     "list_catalog_names",
@@ -533,4 +733,10 @@ __all__ = [
     "update_project_customer_ui",
     "update_project_notes_ui",
     "open_project_ui",
+    # references
+    "list_references_md",
+    "list_reference_filenames",
+    "references_status_md",
+    "upload_reference_ui",
+    "delete_reference_ui",
 ]
