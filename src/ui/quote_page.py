@@ -50,11 +50,14 @@ def build_quote_tab() -> dict:
         # ---- Project linking + versioning controls -------------------
         with gr.Row():
             project_pick = gr.Dropdown(
-                label="📌 关联项目(留空 = 按文件路径自动推断)",
+                label="📌 关联项目(留空 = 按文件路径/文件名自动推断,可输入关键字过滤)",
                 choices=list_project_picker_choices(),
                 value="",
                 interactive=True,
                 allow_custom_value=False,
+                # filterable=True: as the project list grows past
+                # ~20, this dropdown without filtering is unusable.
+                filterable=True,
                 scale=4,
             )
             refresh_proj_btn = gr.Button(

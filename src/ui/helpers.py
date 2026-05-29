@@ -518,24 +518,26 @@ def _build_scan_status_inline(report) -> str:
 def global_scan_and_refresh(
     assigner: str | None,
     status: str | None,
-    customer_like: str | None,
+    search: str | None,
     current_picker_value: str | None,
+    current_page: int,
 ):
     """
     Manual-refresh handler shared by both tabs.
 
     Runs one disk scan, then returns updates for EVERY refreshable
-    component across both tabs. Wired in app.py to the:
-      - 报价单编辑 tab: 🔄 扫描+刷新 button
-      - 项目管理 tab:  🔄 扫描工作目录 button
+    component across both tabs. Page state is preserved (clamped if
+    the total page count shrank).
 
-    Returns (in order — must match the outputs= list in app.py):
+    Returns (must match the outputs= list in app.py):
       0. quote tab: project_pick choices update
       1. quote tab: scan_status_md text
       2. projects tab: scan_md (large panel above filter row)
-      3. projects tab: list_md (filtered list)
+      3. projects tab: list_md (paginated)
       4. projects tab: project_picker choices update
-      5. projects tab: detail_md (re-rendered if user has a selection)
+      5. projects tab: detail_md (re-rendered if a project is picked)
+      6. projects tab: page_info_md
+      7. projects tab: page_state (clamped current page)
     """
     import gradio as gr
     try:
@@ -554,30 +556,42 @@ def global_scan_and_refresh(
     else:
         detail_update = gr.update()  # leave as-is
 
+    list_md, page_info, total_pages = list_projects_md(
+        assigner, status, search, page=current_page,
+    )
+    # Clamp page state so the indicator stays consistent if scan shrank
+    # the result set.
+    clamped_page = max(1, min(int(current_page or 1), total_pages))
+
     return (
         gr.update(choices=list_project_picker_choices()),       # 0
         inline_status,                                          # 1
         panel_status,                                           # 2
-        list_projects_md(assigner, status, customer_like),      # 3
+        list_md,                                                # 3
         gr.update(choices=list_project_choices()),              # 4
         detail_update,                                          # 5
+        page_info,                                              # 6
+        clamped_page,                                           # 7
     )
 
 
 def silent_scan_for_timer(
     assigner: str | None,
     status: str | None,
-    customer_like: str | None,
+    search: str | None,
+    current_page: int,
 ):
     """
     Background timer handler — scans silently, returns only the
-    dropdown-list updates. Skips status banners and the markdown detail
-    panel so the UI doesn't flicker while users are reading.
+    dropdown-list updates. Skips status banners and the detail panel
+    so the UI doesn't flicker while users are reading.
 
-    Returns (must match outputs= list in app.py timer wiring):
+    Returns:
       0. quote tab: project_pick choices update
-      1. projects tab: list_md (filtered list)
+      1. projects tab: list_md (paginated)
       2. projects tab: project_picker choices update
+      3. projects tab: page_info_md
+      4. projects tab: page_state (clamped)
     """
     import gradio as gr
     try:
@@ -585,13 +599,18 @@ def silent_scan_for_timer(
         scan_projects()
     except Exception:                                                 # noqa: BLE001
         logger.exception("silent scan failed")
-        # Fall through: dropdowns/list still refresh from whatever's
-        # currently in DB. A broken scan shouldn't blank the UI.
+
+    list_md, page_info, total_pages = list_projects_md(
+        assigner, status, search, page=current_page,
+    )
+    clamped_page = max(1, min(int(current_page or 1), total_pages))
 
     return (
         gr.update(choices=list_project_picker_choices()),
-        list_projects_md(assigner, status, customer_like),
+        list_md,
         gr.update(choices=list_project_choices()),
+        page_info,
+        clamped_page,
     )
 
 
@@ -640,27 +659,55 @@ def scan_projects_ui() -> str:
     )
 
 
-def list_projects_md(assigner: str | None, status: str | None, customer: str | None) -> str:
-    """Render projects table as Markdown."""
+PROJECTS_PAGE_SIZE = 10
+
+
+def list_projects_md(
+    assigner: str | None,
+    status: str | None,
+    search: str | None,
+    page: int = 1,
+) -> tuple[str, str, int]:
+    """
+    Render projects table as Markdown, paginated.
+
+    Returns:
+      (list_md, page_info_md, total_pages)
+    `total_pages` is exposed so the wiring code can clamp the page
+    state after filter changes.
+    """
     from ..projects import list_projects
 
     items = list_projects(
         assigner=(assigner or None),
         status=(status or None),
-        customer_like=(customer or None),
+        search=(search or None),
     )
     if not items:
-        return "_没有匹配的项目。先点上面的 `🔄 扫描` 按钮?_"
+        return (
+            "_没有匹配的项目。先点上面的 `🔄 扫描` 按钮?_",
+            "",
+            1,
+        )
 
-    lines = [f"**共 {len(items)} 个项目**",
-             "",
-             "| ID | 状态 | 下发人 | 代码 | 全称 | 客户 | 文件数 | 终版 |",
-             "|---|---|---|---|---|---|---|---|"]
+    total = len(items)
+    total_pages = max(1, (total + PROJECTS_PAGE_SIZE - 1) // PROJECTS_PAGE_SIZE)
+    page = max(1, min(int(page or 1), total_pages))
+    start = (page - 1) * PROJECTS_PAGE_SIZE
+    end = min(start + PROJECTS_PAGE_SIZE, total)
+    page_items = items[start:end]
+
     status_emoji = {
         "进行中": "🟡 进行中", "中标": "🟢 中标",
         "未中标": "🔴 未中标", "结案": "⚪ 结案",
     }
-    for p in items:
+    lines = [
+        f"**共 {total} 个项目** · 当前第 {start + 1}–{end} 条",
+        "",
+        "| ID | 状态 | 下发人 | 代码 | 全称 | 客户 | 文件数 | 终版 |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for p in page_items:
         lines.append(
             f"| {p.id} | {status_emoji.get(p.status, p.status)} | "
             f"{p.assigner} | `{p.name}` | "
@@ -668,7 +715,9 @@ def list_projects_md(assigner: str | None, status: str | None, customer: str | N
             f"{p.customer or '-'} | {p.file_count} | "
             f"{'✅' if p.has_final_quote else ''} |"
         )
-    return "\n".join(lines)
+
+    page_info = f"**第 {page} / {total_pages} 页** (每页 {PROJECTS_PAGE_SIZE} 条)"
+    return ("\n".join(lines), page_info, total_pages)
 
 
 def list_project_choices() -> list[tuple[str, str]]:

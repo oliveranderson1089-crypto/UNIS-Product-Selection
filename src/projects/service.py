@@ -33,8 +33,19 @@ def list_projects(
     assigner: str | None = None,
     status: str | None = None,
     customer_like: str | None = None,
+    search: str | None = None,
 ) -> list[ProjectSummary]:
-    """Return all projects matching the filters."""
+    """
+    Return all projects matching the filters.
+
+    `search` (new): generic keyword that matches against `name`,
+        `display_name`, OR `customer` (case-insensitive substring on
+        any of the three). Use this for the UI "搜索" box.
+    `customer_like` (legacy): kept for back-compat — narrower, only
+        matches `customer`. Prefer `search`.
+    """
+    from sqlalchemy import or_
+
     db = get_db()
     with db.session() as s:
         stmt = select(Project)
@@ -44,6 +55,18 @@ def list_projects(
             stmt = stmt.where(Project.status == status)
         if customer_like:
             stmt = stmt.where(Project.customer.contains(customer_like))
+        if search:
+            kw = search.strip()
+            if kw:
+                # OR across name / display_name / customer so a single
+                # search box covers all the ways a user might recall a
+                # project: short folder code, full descriptive name, or
+                # the customer entity.
+                stmt = stmt.where(or_(
+                    Project.name.contains(kw),
+                    Project.display_name.contains(kw),
+                    Project.customer.contains(kw),
+                ))
         stmt = stmt.order_by(Project.updated_at.desc())
 
         out: list[ProjectSummary] = []

@@ -52,10 +52,25 @@ def build_projects_tab() -> dict:
                 label="按状态过滤", choices=[""] + list(PROJECT_STATUSES),
                 value="", scale=1,
             )
-            customer_in = gr.Textbox(label="客户关键字", placeholder="如 中核", scale=1)
+            # Renamed from "客户关键字" to a single broad search field.
+            # The OR query in list_projects matches name / display_name /
+            # customer simultaneously, so typing the project code, full
+            # name, or customer all work.
+            customer_in = gr.Textbox(
+                label="🔍 搜索关键字",
+                placeholder="项目代码 / 全称 / 客户(任一字段含此关键字即命中)",
+                scale=2,
+            )
 
-        # ----- Project list -------------------------------------------
-        list_md = gr.Markdown(value=list_projects_md(None, None, None))
+        # ----- Project list (paginated) ------------------------------
+        # Initial render: page 1 of all projects.
+        _initial_list_md, _initial_page_info, _ = list_projects_md(None, None, None, page=1)
+        list_md = gr.Markdown(value=_initial_list_md)
+        page_state = gr.State(value=1)
+        with gr.Row():
+            prev_btn = gr.Button("◀ 上一页", size="sm", scale=1)
+            page_info_md = gr.Markdown(value=_initial_page_info)
+            next_btn = gr.Button("下一页 ▶", size="sm", scale=1)
 
         # ----- Detail panel -------------------------------------------
         gr.Markdown("---")
@@ -63,10 +78,14 @@ def build_projects_tab() -> dict:
 
         with gr.Row():
             project_picker = gr.Dropdown(
-                label="选择项目",
+                label="选择项目(可输入关键字过滤)",
                 choices=list_project_choices(),
                 value=None,
                 scale=4,
+                # filterable=True turns the dropdown into a type-ahead
+                # combobox. Critical for usability once projects > ~20.
+                filterable=True,
+                allow_custom_value=False,
             )
             open_folder_btn = gr.Button("📂 打开文件夹", size="sm", scale=1)
         open_result = gr.Markdown(value="")
@@ -99,13 +118,40 @@ def build_projects_tab() -> dict:
         # to also update components on the 报价单编辑 tab (the project
         # dropdown there), which only app.py can see.
 
-        # Filter changes — pure DB re-render, no disk scan needed.
+        # ----- Filter triggers: reset to page 1 and re-render ----------
+        def _on_filter_change(a, st, sr):
+            list_md_v, page_info_v, _ = list_projects_md(a, st, sr, page=1)
+            return list_md_v, page_info_v, 1
         for trigger in (assigner_in, status_in, customer_in):
             trigger.change(
-                fn=list_projects_md,
+                fn=_on_filter_change,
                 inputs=[assigner_in, status_in, customer_in],
-                outputs=list_md,
+                outputs=[list_md, page_info_md, page_state],
             )
+
+        # ----- Pagination buttons --------------------------------------
+        def _on_prev(page, a, st, sr):
+            new_page = max(1, int(page or 1) - 1)
+            list_md_v, page_info_v, total = list_projects_md(a, st, sr, page=new_page)
+            return list_md_v, page_info_v, max(1, min(new_page, total))
+
+        def _on_next(page, a, st, sr):
+            # We don't know total_pages without querying; let
+            # list_projects_md clamp.
+            new_page = int(page or 1) + 1
+            list_md_v, page_info_v, total = list_projects_md(a, st, sr, page=new_page)
+            return list_md_v, page_info_v, max(1, min(new_page, total))
+
+        prev_btn.click(
+            fn=_on_prev,
+            inputs=[page_state, assigner_in, status_in, customer_in],
+            outputs=[list_md, page_info_md, page_state],
+        )
+        next_btn.click(
+            fn=_on_next,
+            inputs=[page_state, assigner_in, status_in, customer_in],
+            outputs=[list_md, page_info_md, page_state],
+        )
 
         project_picker.change(fn=show_project_md, inputs=project_picker, outputs=detail_md)
         open_folder_btn.click(fn=open_project_ui, inputs=project_picker, outputs=open_result)
@@ -145,6 +191,9 @@ def build_projects_tab() -> dict:
         "assigner_in": assigner_in,
         "status_in": status_in,
         "customer_in": customer_in,
+        # Pagination — needed by app.py for cross-tab scan handlers
+        "page_state": page_state,
+        "page_info_md": page_info_md,
     }
 
 

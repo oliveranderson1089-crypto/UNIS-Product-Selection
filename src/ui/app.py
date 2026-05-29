@@ -90,12 +90,13 @@ def build_app() -> gr.Blocks:
         # ---- Cross-tab refresh wiring + auto-scan timer ----------------
         # Both the 🔄 button in 报价单编辑 and 🔄 in 项目管理 trigger the
         # SAME action: scan disk + refresh every project-related
-        # component on both tabs.
+        # component on both tabs. Page state is preserved (clamped).
         manual_scan_inputs = [
             projects_refs["assigner_in"],
             projects_refs["status_in"],
             projects_refs["customer_in"],
             projects_refs["project_picker"],   # for refreshing detail panel
+            projects_refs["page_state"],
         ]
         manual_scan_outputs = [
             quote_refs["project_pick"],
@@ -104,6 +105,8 @@ def build_app() -> gr.Blocks:
             projects_refs["list_md"],
             projects_refs["project_picker"],
             projects_refs["detail_md"],
+            projects_refs["page_info_md"],
+            projects_refs["page_state"],
         ]
         quote_refs["refresh_btn"].click(
             fn=global_scan_and_refresh,
@@ -117,17 +120,20 @@ def build_app() -> gr.Blocks:
         )
         # 项目管理 tab's "🔁 刷新列表" stays DB-only (no disk scan):
         # useful for refreshing after editing status/notes via the
-        # editors below the detail panel.
+        # editors below the detail panel. Also keeps the current page.
         projects_refs["refresh_btn"].click(
             fn=_refresh_projects_view_only,
             inputs=[
                 projects_refs["assigner_in"],
                 projects_refs["status_in"],
                 projects_refs["customer_in"],
+                projects_refs["page_state"],
             ],
             outputs=[
                 projects_refs["list_md"],
                 projects_refs["project_picker"],
+                projects_refs["page_info_md"],
+                projects_refs["page_state"],
             ],
         )
 
@@ -142,23 +148,32 @@ def build_app() -> gr.Blocks:
                 projects_refs["assigner_in"],
                 projects_refs["status_in"],
                 projects_refs["customer_in"],
+                projects_refs["page_state"],
             ],
             outputs=[
                 quote_refs["project_pick"],
                 projects_refs["list_md"],
                 projects_refs["project_picker"],
+                projects_refs["page_info_md"],
+                projects_refs["page_state"],
             ],
         )
 
     return app
 
 
-def _refresh_projects_view_only(assigner, status, customer):
+def _refresh_projects_view_only(assigner, status, search, current_page):
     """DB-only refresh — no disk scan. Powers the 🔁 button on 项目管理."""
     from .helpers import list_project_choices, list_projects_md
+    list_md_v, page_info_v, total_pages = list_projects_md(
+        assigner, status, search, page=current_page,
+    )
+    clamped = max(1, min(int(current_page or 1), total_pages))
     return (
-        list_projects_md(assigner, status, customer),
+        list_md_v,
         gr.update(choices=list_project_choices()),
+        page_info_v,
+        clamped,
     )
 
 
