@@ -240,9 +240,64 @@ class ProjectFile(Base):
     project:      Mapped[Project] = relationship(back_populates="files")
 
 
+# ---------------------------------------------------------------------------
+# QuoteVersion (报价单格式化版本)
+# ---------------------------------------------------------------------------
+# Records EACH run of the quote formatter as an immutable version. Two
+# reasons we want this instead of just trusting ProjectFile rows:
+#
+#   1. Audit trail — when a quote went out wrong, you want to know which
+#      rules ran on which input, when, with what conversion method.
+#   2. Re-runs — the same source .xls may be reformatted multiple times
+#      (rule set changed, BOM updated). Each pass produces a new output;
+#      we keep them all linked to the same project for traceability.
+#
+# `project_id` is nullable: not every quote belongs to a tracked project
+# (one-off testing, files outside work_dir). Orphan versions are still
+# kept so the formatter UI can show recent runs even before project
+# linking happens.
+#
+# `rule_report` is a JSON snapshot of the rule names + applied flag +
+# changes + warnings — same shape as the FormatReport returned by the
+# formatter. Stored verbatim so the UI can render it the same way later.
+
+class QuoteVersion(Base):
+    __tablename__ = "quote_versions"
+
+    id:                Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id:        Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    # Source = the .xls/.xlsx file the user supplied as input
+    source_file:       Mapped[str] = mapped_column(String(1024))
+    source_filename:   Mapped[str] = mapped_column(String(256), index=True)
+    # Output = the .formatted.xlsx the formatter wrote
+    output_file:       Mapped[str] = mapped_column(String(1024))
+
+    generated_at:      Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True,
+    )
+    # "com" or "openpyxl" — which code path actually did the work
+    formatter_method:  Mapped[str] = mapped_column(String(16))
+    # "com" / "xlrd" / None — only set when the input was a .xls that
+    # had to be auto-converted to .xlsx
+    conversion_method: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    applied_count:     Mapped[int] = mapped_column(Integer, default=0)
+    total_rules:       Mapped[int] = mapped_column(Integer, default=0)
+    # JSON: list of {name, applied, changes:[...], warnings:[...]}
+    rule_report:       Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON, nullable=True,
+    )
+    notes:             Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    project:           Mapped[Project | None] = relationship()
+
+
 __all__ = [
     "Base", "Product", "ProductPDF", "CrawlRecord",
     "CatalogList", "CatalogEntry",
-    "Project", "ProjectFile",
+    "Project", "ProjectFile", "QuoteVersion",
     "PROJECT_STATUSES", "DEFAULT_PROJECT_STATUS",
 ]

@@ -297,9 +297,17 @@ def format_quote_ui(
     skip_server_cleanup: bool,
     skip_oem_swap: bool = False,
     skip_ft20_template: bool = False,
+    project_ref: str | None = None,
+    track_version: bool = True,
+    notes: str | None = None,
 ) -> tuple[str, str | None]:
     """
     Gradio callback for quote format.
+
+    `project_ref`: optional project id ("12") or name to link the resulting
+        QuoteVersion to. Empty string / None → fall back to path-based
+        auto-inference.
+    `track_version`: if False, skip writing the QuoteVersion row entirely.
 
     Returns (markdown_report, downloadable_file_path).
     """
@@ -330,8 +338,36 @@ def format_quote_ui(
         logger.exception("format_quote crashed")
         return (f"❌ **意外错误:** `{exc}`", None)
 
+    # ---- Record QuoteVersion (best-effort, never breaks the format) ----
+    version_md = ""
+    if track_version:
+        from ..projects import record_quote_version
+        ref = (project_ref or "").strip() or None
+        summary = record_quote_version(
+            report,
+            project_ref=ref,
+            auto_infer=(ref is None),
+            notes=(notes or "").strip() or None,
+        )
+        if summary is None:
+            version_md = "\n> ⚠️ 版本记录写入失败(已忽略,见日志)"
+        elif summary.project_id is not None:
+            version_md = (
+                f"\n> 📌 已记录为版本 **#{summary.id}**,关联项目 "
+                f"`[{summary.project_id}] {summary.project_name}`"
+            )
+        else:
+            version_md = (
+                f"\n> 📌 已记录为版本 **#{summary.id}**(未关联项目)。"
+                f"可在「项目管理」标签里手动关联,或用 "
+                f"`quote versions link {summary.id} <project>` 命令。"
+            )
+    else:
+        version_md = "\n> ⏭️ 已跳过版本记录(取消勾选「记录此次版本」)"
+
     lines = [
-        f"✅ **格式化完成** — 应用 **{report.applied_count}** / {len(report.rule_results)} 条规则",
+        f"✅ **格式化完成** — 应用 **{report.applied_count}** / {len(report.rule_results)} 条规则"
+        + version_md,
         "",
         f"- 输入: `{src.name}`",
         f"- 输出: `{out.name}` ({out.stat().st_size // 1024} KB)",
@@ -357,6 +393,48 @@ def format_quote_ui(
         lines.append("")
 
     return ("\n".join(lines), str(out))
+
+
+def list_project_picker_choices(include_none: bool = True) -> list[tuple[str, str]]:
+    """
+    (label, value) pairs for picking a project in dropdowns.
+
+    Value is the project id as a string; label is "[id] assigner/name (customer)".
+    First option (when include_none=True) is the "auto-infer / none" sentinel.
+    """
+    from ..projects import list_projects
+    out: list[tuple[str, str]] = []
+    if include_none:
+        out.append(("(自动按文件路径推断)", ""))
+    for p in list_projects():
+        label = f"[{p.id}] {p.assigner}/{p.name}"
+        if p.customer:
+            label += f" — {p.customer}"
+        out.append((label, str(p.id)))
+    return out
+
+
+def render_quote_versions_md(project_id: int) -> str:
+    """Markdown table of recent QuoteVersion rows for one project."""
+    from ..projects import list_quote_versions
+    rows = list_quote_versions(project_id=project_id, limit=20)
+    if not rows:
+        return "_(本项目还没有任何报价版本记录。下次在「报价单编辑」标签格式化时会自动记录。)_"
+
+    lines = [
+        f"### 📋 报价版本历史 (最近 {len(rows)} 条)",
+        "",
+        "| #ID | 生成时间 | 源文件 | 应用规则 | 方式 | 备注 |",
+        "|---|---|---|---|---|---|",
+    ]
+    for v in rows:
+        notes = (v.notes or "").replace("|", "/")[:30]
+        lines.append(
+            f"| **{v.id}** | {v.generated_at:%Y-%m-%d %H:%M} | "
+            f"`{v.source_filename}` | {v.applied_count}/{v.total_rules} | "
+            f"{v.formatter_method} | {notes} |"
+        )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +545,9 @@ def show_project_md(project_id: str | None) -> str:
             )
     else:
         lines += ["", "_(项目文件夹空)_"]
+
+    # ---- Recorded quote-format versions for this project ----------------
+    lines += ["", render_quote_versions_md(proj.id)]
 
     return "\n".join(lines)
 
@@ -814,4 +895,7 @@ __all__ = [
     "references_status_md",
     "upload_reference_ui",
     "delete_reference_ui",
+    # quote versions
+    "list_project_picker_choices",
+    "render_quote_versions_md",
 ]

@@ -1,12 +1,15 @@
 """
-"报价单编辑" tab — upload, apply rules, download.
+"报价单编辑" tab — upload, apply rules, download, archive a version.
 """
 
 from __future__ import annotations
 
 import gradio as gr
 
-from .helpers import format_quote_ui
+from .helpers import (
+    format_quote_ui,
+    list_project_picker_choices,
+)
 
 
 def build_quote_tab():
@@ -26,7 +29,9 @@ def build_quote_tab():
             "保留公式与小计\n\n"
             "> 💡 `.xls` 会自动用本机 Excel / WPS 转成 `.xlsx`(公式、图片、格式全保留)。"
             "如果系统没装 Office,会回退到纯 Python 读法(只保留数值,丢公式,且后两条服务器规则需要 COM)。\n\n"
-            "> 📂 参考文件目录:`data/References/`(IT产品BOM、R3800FT20 模板等)"
+            "> 📂 参考文件目录:`data/References/`(IT产品BOM、R3800FT20 模板等)\n"
+            "> 📌 每次格式化会自动记录为一个**版本**,默认按文件路径推断关联项目;"
+            "可在「项目管理」标签查看每个项目的历史版本。"
         )
 
         with gr.Row():
@@ -35,6 +40,27 @@ def build_quote_tab():
                 file_types=[".xls", ".xlsx", ".xlsm"],
                 type="filepath",
             )
+
+        # ---- Project linking + versioning controls -------------------
+        with gr.Row():
+            project_pick = gr.Dropdown(
+                label="📌 关联项目(留空 = 按文件路径自动推断)",
+                choices=list_project_picker_choices(),
+                value="",
+                interactive=True,
+                allow_custom_value=False,
+            )
+            refresh_proj_btn = gr.Button("🔄", size="sm")
+        with gr.Row():
+            track_version = gr.Checkbox(
+                label="记录此次版本(写入 quote_versions 表)",
+                value=True,
+            )
+            version_notes = gr.Textbox(
+                label="版本备注(可选)",
+                placeholder="例如:第二轮报价、调整折扣后版本",
+            )
+
         with gr.Accordion("跳过规则(高级)", open=False):
             with gr.Row():
                 skip_logo = gr.Checkbox(label="不删 logo")
@@ -55,8 +81,13 @@ def build_quote_tab():
                 file_in,
                 skip_logo, skip_columns, skip_model,
                 skip_server, skip_oem, skip_ft20,
+                project_pick, track_version, version_notes,
             ],
             outputs=[report_md, download],
+        )
+        refresh_proj_btn.click(
+            fn=lambda: gr.update(choices=list_project_picker_choices()),
+            outputs=project_pick,
         )
 
 
