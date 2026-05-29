@@ -552,6 +552,34 @@ def _classify_reference(name: str) -> str:
     return "📦 其他"
 
 
+def _imported_catalog_by_pdf_name() -> dict[str, str]:
+    """
+    Build {pdf_basename: catalog_name} from the catalog DB.
+
+    PDFs were imported into SQLite (CatalogList rows). Their `source_file`
+    column was the path at import time (often Downloads), so the file may
+    no longer live there. We key off basename so a PDF moved into
+    References/ still matches the catalog it became.
+    """
+    try:
+        from sqlalchemy import select
+        from ..storage import get_db
+        from ..storage.models import CatalogList
+    except Exception:                                                 # noqa: BLE001
+        return {}
+    try:
+        db = get_db()
+        out: dict[str, str] = {}
+        with db.session() as s:
+            for c in s.scalars(select(CatalogList)):
+                if c.source_file:
+                    out[Path(c.source_file).name] = c.name
+        return out
+    except Exception:                                                 # noqa: BLE001
+        logger.exception("failed to query CatalogList")
+        return {}
+
+
 def list_references_md() -> str:
     """Markdown table of every file in data/References/."""
     from ..config import get_config
@@ -578,10 +606,13 @@ def list_references_md() -> str:
     if ft20 is not None:
         active.add(ft20.resolve())
 
+    # PDFs that have been imported into the catalog DB.
+    pdf_to_catalog = _imported_catalog_by_pdf_name()
+
     lines = [
         f"### 📂 `data/References/` — 共 {len(files)} 份(按修改时间倒序)",
         "",
-        "| 文件名 | 类型 | 大小 | 修改时间 | 生效 |",
+        "| 文件名 | 类型 | 大小 | 修改时间 | 生效 / 备注 |",
         "|---|---|---|---|---|",
     ]
     for p in files:
@@ -589,9 +620,14 @@ def list_references_md() -> str:
         size_kb = st.st_size // 1024
         mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
         kind = _classify_reference(p.name)
-        active_mark = "✅" if p.resolve() in active else ""
+
+        if p.suffix.lower() == ".pdf":
+            cat_name = pdf_to_catalog.get(p.name)
+            badge = f"✅ 已导入为名录: **{cat_name}**" if cat_name else "⬜ 未导入"
+        else:
+            badge = "✅" if p.resolve() in active else ""
         lines.append(
-            f"| `{p.name}` | {kind} | {size_kb} KB | {mtime} | {active_mark} |"
+            f"| `{p.name}` | {kind} | {size_kb} KB | {mtime} | {badge} |"
         )
     return "\n".join(lines)
 
@@ -604,8 +640,27 @@ def list_reference_filenames() -> list[str]:
     return sorted([p.name for p in refs_dir.iterdir() if p.is_file()])
 
 
+def list_reference_pdfs() -> list[str]:
+    """PDF filenames in data/References/ — for the catalog-import picker."""
+    refs_dir = _references_dir()
+    if not refs_dir.exists():
+        return []
+    return sorted(
+        p.name for p in refs_dir.iterdir()
+        if p.is_file() and p.suffix.lower() == ".pdf"
+    )
+
+
+def reference_pdf_path(name: str) -> Path | None:
+    """Resolve a References PDF filename to its absolute path."""
+    if not name:
+        return None
+    p = _references_dir() / name
+    return p if p.exists() else None
+
+
 def references_status_md() -> str:
-    """Show which exact file each rule will pick right now."""
+    """Show which exact file each rule will pick + imported-catalog status."""
     from ..config import get_config
     from ..quotes.bom_lookup import resolve_bom_path
     from ..quotes.r3800ft20_template import resolve_template_path
@@ -622,18 +677,36 @@ def references_status_md() -> str:
             )
         return f"- **{label}**: `{p.name}`"
 
-    return (
-        "#### 🎯 当前生效的参考文件\n\n"
-        + _line(
+    lines = [
+        "#### 🎯 当前生效的参考文件",
+        "",
+        "**报价规则用(运行时直读磁盘)**",
+        _line(
             "OEM 维保 BOM (swap_oem_service_line)",
             bom, cfg.quotes.bom_path or "(未配置)",
-        )
-        + "\n"
-        + _line(
+        ),
+        _line(
             "R3800FT20 模板 (fill_r3800ft20_template)",
             ft20, cfg.quotes.r3800ft20_template_path or "(未配置)",
-        )
-    )
+        ),
+    ]
+
+    # Imported catalogs — these were one-time loaded into SQLite; the PDF
+    # itself just sits here as audit/reference now.
+    pdf_to_catalog = _imported_catalog_by_pdf_name()
+    if pdf_to_catalog:
+        lines += ["", "**名录(一次性导入数据库,后续从 DB 读)**"]
+        for pdf, cat in sorted(pdf_to_catalog.items()):
+            in_refs = (_references_dir() / pdf).exists()
+            mark = "(✅ 在 References/)" if in_refs else "(⚠️ 不在 References/,原文件可能已挪走)"
+            lines.append(f"- **{cat}** ← `{pdf}` {mark}")
+    else:
+        lines += [
+            "",
+            "**名录** — _还没有导入任何名录。去「名录管理」标签导入。_",
+        ]
+
+    return "\n".join(lines)
 
 
 def upload_reference_ui(uploaded_path: str | None) -> str:
@@ -736,6 +809,8 @@ __all__ = [
     # references
     "list_references_md",
     "list_reference_filenames",
+    "list_reference_pdfs",
+    "reference_pdf_path",
     "references_status_md",
     "upload_reference_ui",
     "delete_reference_ui",
