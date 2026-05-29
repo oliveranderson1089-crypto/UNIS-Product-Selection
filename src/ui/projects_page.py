@@ -21,7 +21,6 @@ from .helpers import (
     list_project_choices,
     list_projects_md,
     open_project_ui,
-    scan_projects_ui,
     show_project_md,
     update_project_customer_ui,
     update_project_notes_ui,
@@ -29,7 +28,11 @@ from .helpers import (
 )
 
 
-def build_projects_tab():
+def build_projects_tab() -> dict:
+    """
+    Build the 项目管理 tab and return refs the cross-tab refresh wiring
+    in app.py needs to update.
+    """
     with gr.Tab("📁 项目管理"):
         gr.Markdown(
             "## 项目管理\n\n"
@@ -92,22 +95,11 @@ def build_projects_tab():
             notes_result = gr.Markdown(value="")
 
         # ===== Wiring ====================================================
-        def _refresh_all(assigner, status, customer):
-            return (
-                list_projects_md(assigner, status, customer),
-                gr.update(choices=list_project_choices()),
-            )
+        # NOTE: scan_btn and refresh_btn are wired in app.py — they need
+        # to also update components on the 报价单编辑 tab (the project
+        # dropdown there), which only app.py can see.
 
-        scan_btn.click(
-            fn=lambda a, s, c: (scan_projects_ui(),) + _refresh_all(a, s, c),
-            inputs=[assigner_in, status_in, customer_in],
-            outputs=[scan_md, list_md, project_picker],
-        )
-        refresh_btn.click(
-            fn=_refresh_all,
-            inputs=[assigner_in, status_in, customer_in],
-            outputs=[list_md, project_picker],
-        )
+        # Filter changes — pure DB re-render, no disk scan needed.
         for trigger in (assigner_in, status_in, customer_in):
             trigger.change(
                 fn=list_projects_md,
@@ -142,6 +134,18 @@ def build_projects_tab():
             inputs=[project_picker, notes_edit],
             outputs=[notes_result, detail_md],
         )
+
+    return {
+        "scan_btn": scan_btn,
+        "refresh_btn": refresh_btn,
+        "scan_md": scan_md,
+        "list_md": list_md,
+        "project_picker": project_picker,
+        "detail_md": detail_md,
+        "assigner_in": assigner_in,
+        "status_in": status_in,
+        "customer_in": customer_in,
+    }
 
 
 __all__ = ["build_projects_tab"]

@@ -419,9 +419,8 @@ def scan_and_refresh_project_choices() -> tuple[object, str]:
     Walk the work_dir, upsert any new project folders found on disk, then
     return a fresh dropdown choices update + a one-line status markdown.
 
-    Wired to the 🔄 button next to the project picker so the user can
-    pick up a freshly-created project folder without leaving the
-    报价单编辑 tab.
+    Kept for backward compat / single-tab callers. The new cross-tab path
+    is `global_scan_and_refresh` below.
     """
     try:
         from ..projects import scan_projects
@@ -444,6 +443,114 @@ def scan_and_refresh_project_choices() -> tuple[object, str]:
     return (
         gr.update(choices=list_project_picker_choices()),
         status,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cross-tab unified scan + refresh
+# ---------------------------------------------------------------------------
+# These power the "click refresh anywhere → both tabs reflect the new
+# state of disk + DB" UX. Same backend (scan_projects), but the return
+# tuples are sized to match the wiring in app.py.
+
+def _build_scan_status_md(report) -> str:
+    """Pretty markdown panel for the projects-tab scan status area."""
+    return (
+        f"✅ **扫描完成** — `{report.work_dir}`\n\n"
+        f"- 人员目录: {report.assigners_seen}\n"
+        f"- 项目数: {report.projects_seen}  (新增 **{report.projects_new}**)\n"
+        f"- 文件数: {report.files_total}  (新增 **{report.files_new}**,"
+        f"已删 {report.files_removed})"
+    )
+
+
+def _build_scan_status_inline(report) -> str:
+    """One-line status for the quote-tab inline status spot."""
+    return (
+        f"✅ 已扫描 `{report.work_dir}` · "
+        f"项目: {report.projects_seen}(新增 **{report.projects_new}**) · "
+        f"文件: {report.files_total}(新增 {report.files_new},"
+        f"已删 {report.files_removed})"
+    )
+
+
+def global_scan_and_refresh(
+    assigner: str | None,
+    status: str | None,
+    customer_like: str | None,
+    current_picker_value: str | None,
+):
+    """
+    Manual-refresh handler shared by both tabs.
+
+    Runs one disk scan, then returns updates for EVERY refreshable
+    component across both tabs. Wired in app.py to the:
+      - 报价单编辑 tab: 🔄 扫描+刷新 button
+      - 项目管理 tab:  🔄 扫描工作目录 button
+
+    Returns (in order — must match the outputs= list in app.py):
+      0. quote tab: project_pick choices update
+      1. quote tab: scan_status_md text
+      2. projects tab: scan_md (large panel above filter row)
+      3. projects tab: list_md (filtered list)
+      4. projects tab: project_picker choices update
+      5. projects tab: detail_md (re-rendered if user has a selection)
+    """
+    import gradio as gr
+    try:
+        from ..projects import scan_projects
+        report = scan_projects()
+        inline_status = _build_scan_status_inline(report)
+        panel_status = _build_scan_status_md(report)
+    except Exception as exc:                                          # noqa: BLE001
+        logger.exception("global_scan_and_refresh failed")
+        inline_status = f"❌ 扫描失败: `{exc}`"
+        panel_status = inline_status
+
+    detail_update: object
+    if current_picker_value:
+        detail_update = show_project_md(current_picker_value)
+    else:
+        detail_update = gr.update()  # leave as-is
+
+    return (
+        gr.update(choices=list_project_picker_choices()),       # 0
+        inline_status,                                          # 1
+        panel_status,                                           # 2
+        list_projects_md(assigner, status, customer_like),      # 3
+        gr.update(choices=list_project_choices()),              # 4
+        detail_update,                                          # 5
+    )
+
+
+def silent_scan_for_timer(
+    assigner: str | None,
+    status: str | None,
+    customer_like: str | None,
+):
+    """
+    Background timer handler — scans silently, returns only the
+    dropdown-list updates. Skips status banners and the markdown detail
+    panel so the UI doesn't flicker while users are reading.
+
+    Returns (must match outputs= list in app.py timer wiring):
+      0. quote tab: project_pick choices update
+      1. projects tab: list_md (filtered list)
+      2. projects tab: project_picker choices update
+    """
+    import gradio as gr
+    try:
+        from ..projects import scan_projects
+        scan_projects()
+    except Exception:                                                 # noqa: BLE001
+        logger.exception("silent scan failed")
+        # Fall through: dropdowns/list still refresh from whatever's
+        # currently in DB. A broken scan shouldn't blank the UI.
+
+    return (
+        gr.update(choices=list_project_picker_choices()),
+        list_projects_md(assigner, status, customer_like),
+        gr.update(choices=list_project_choices()),
     )
 
 
@@ -931,5 +1038,7 @@ __all__ = [
     # quote versions
     "list_project_picker_choices",
     "scan_and_refresh_project_choices",
+    "global_scan_and_refresh",
+    "silent_scan_for_timer",
     "render_quote_versions_md",
 ]

@@ -9,11 +9,14 @@ import gradio as gr
 from .helpers import (
     format_quote_ui,
     list_project_picker_choices,
-    scan_and_refresh_project_choices,
 )
 
 
-def build_quote_tab():
+def build_quote_tab() -> dict:
+    """
+    Build the 报价单编辑 tab and return refs to components that the
+    cross-tab refresh wiring in app.py needs to update.
+    """
     with gr.Tab("📊 报价单编辑"):
         gr.Markdown(
             "## 报价单格式化\n\n"
@@ -94,10 +97,14 @@ def build_quote_tab():
             ],
             outputs=[report_md, download],
         )
-        refresh_proj_btn.click(
-            fn=scan_and_refresh_project_choices,
-            outputs=[project_pick, scan_status_md],
-        )
+        # refresh_proj_btn is wired in app.py — it needs to also update
+        # components on the projects tab, which only app.py can see.
+
+    return {
+        "project_pick": project_pick,
+        "scan_status_md": scan_status_md,
+        "refresh_btn": refresh_proj_btn,
+    }
 
 
 __all__ = ["build_quote_tab"]

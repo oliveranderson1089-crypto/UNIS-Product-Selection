@@ -17,10 +17,17 @@ from __future__ import annotations
 import gradio as gr
 
 from .catalog_page import build_catalog_tab
+from .helpers import global_scan_and_refresh, silent_scan_for_timer
 from .projects_page import build_projects_tab
 from .quote_page import build_quote_tab
 from .references_page import build_references_tab
 from .select_page import build_select_tab
+
+# Background scan cadence. Light enough not to thrash the disk (work_dir
+# walks complete in well under a second on a typical SSD) but snappy
+# enough that newly-created project folders show up before the next
+# manual click. Change here if you want a different default.
+AUTO_SCAN_INTERVAL_SECONDS = 60
 
 
 def build_app() -> gr.Blocks:
@@ -72,15 +79,87 @@ def build_app() -> gr.Blocks:
         build_catalog_tab()
 
         # ---- 项目管理 ---------------------------------------------------
-        build_projects_tab()
+        projects_refs = build_projects_tab()
 
         # ---- 报价单编辑 -------------------------------------------------
-        build_quote_tab()
+        quote_refs = build_quote_tab()
 
         # ---- 参考文件管理 -----------------------------------------------
         build_references_tab()
 
+        # ---- Cross-tab refresh wiring + auto-scan timer ----------------
+        # Both the 🔄 button in 报价单编辑 and 🔄 in 项目管理 trigger the
+        # SAME action: scan disk + refresh every project-related
+        # component on both tabs.
+        manual_scan_inputs = [
+            projects_refs["assigner_in"],
+            projects_refs["status_in"],
+            projects_refs["customer_in"],
+            projects_refs["project_picker"],   # for refreshing detail panel
+        ]
+        manual_scan_outputs = [
+            quote_refs["project_pick"],
+            quote_refs["scan_status_md"],
+            projects_refs["scan_md"],
+            projects_refs["list_md"],
+            projects_refs["project_picker"],
+            projects_refs["detail_md"],
+        ]
+        quote_refs["refresh_btn"].click(
+            fn=global_scan_and_refresh,
+            inputs=manual_scan_inputs,
+            outputs=manual_scan_outputs,
+        )
+        projects_refs["scan_btn"].click(
+            fn=global_scan_and_refresh,
+            inputs=manual_scan_inputs,
+            outputs=manual_scan_outputs,
+        )
+        # 项目管理 tab's "🔁 刷新列表" stays DB-only (no disk scan):
+        # useful for refreshing after editing status/notes via the
+        # editors below the detail panel.
+        projects_refs["refresh_btn"].click(
+            fn=_refresh_projects_view_only,
+            inputs=[
+                projects_refs["assigner_in"],
+                projects_refs["status_in"],
+                projects_refs["customer_in"],
+            ],
+            outputs=[
+                projects_refs["list_md"],
+                projects_refs["project_picker"],
+            ],
+        )
+
+        # Background timer — scans the disk silently, then pushes fresh
+        # choices to the project dropdowns + the projects list. We
+        # deliberately skip status banners and the project detail panel
+        # so users reading details aren't disrupted.
+        timer = gr.Timer(value=AUTO_SCAN_INTERVAL_SECONDS)
+        timer.tick(
+            fn=silent_scan_for_timer,
+            inputs=[
+                projects_refs["assigner_in"],
+                projects_refs["status_in"],
+                projects_refs["customer_in"],
+            ],
+            outputs=[
+                quote_refs["project_pick"],
+                projects_refs["list_md"],
+                projects_refs["project_picker"],
+            ],
+        )
+
     return app
+
+
+def _refresh_projects_view_only(assigner, status, customer):
+    """DB-only refresh — no disk scan. Powers the 🔁 button on 项目管理."""
+    from .helpers import list_project_choices, list_projects_md
+    return (
+        list_projects_md(assigner, status, customer),
+        gr.update(choices=list_project_choices()),
+    )
 
 
 def launch(
