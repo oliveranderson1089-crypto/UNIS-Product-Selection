@@ -414,6 +414,39 @@ def list_project_picker_choices(include_none: bool = True) -> list[tuple[str, st
     return out
 
 
+def scan_and_refresh_project_choices() -> tuple[object, str]:
+    """
+    Walk the work_dir, upsert any new project folders found on disk, then
+    return a fresh dropdown choices update + a one-line status markdown.
+
+    Wired to the 🔄 button next to the project picker so the user can
+    pick up a freshly-created project folder without leaving the
+    报价单编辑 tab.
+    """
+    try:
+        from ..projects import scan_projects
+        report = scan_projects()
+    except Exception as exc:                                          # noqa: BLE001
+        logger.exception("scan_projects failed")
+        import gradio as gr
+        return (
+            gr.update(choices=list_project_picker_choices()),
+            f"❌ 扫描失败: `{exc}`",
+        )
+
+    import gradio as gr
+    status_bits = [
+        f"✅ 已扫描 `{report.work_dir}`",
+        f"项目: {report.projects_seen}(新增 **{report.projects_new}**)",
+        f"文件: {report.files_total}(新增 {report.files_new},删除 {report.files_removed})",
+    ]
+    status = " · ".join(status_bits)
+    return (
+        gr.update(choices=list_project_picker_choices()),
+        status,
+    )
+
+
 def render_quote_versions_md(project_id: int) -> str:
     """Markdown table of recent QuoteVersion rows for one project."""
     from ..projects import list_quote_versions
@@ -897,5 +930,6 @@ __all__ = [
     "delete_reference_ui",
     # quote versions
     "list_project_picker_choices",
+    "scan_and_refresh_project_choices",
     "render_quote_versions_md",
 ]

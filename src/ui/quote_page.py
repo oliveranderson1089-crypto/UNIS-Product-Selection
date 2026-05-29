@@ -9,6 +9,7 @@ import gradio as gr
 from .helpers import (
     format_quote_ui,
     list_project_picker_choices,
+    scan_and_refresh_project_choices,
 )
 
 
@@ -49,8 +50,14 @@ def build_quote_tab():
                 value="",
                 interactive=True,
                 allow_custom_value=False,
+                scale=4,
             )
-            refresh_proj_btn = gr.Button("🔄", size="sm")
+            refresh_proj_btn = gr.Button(
+                "🔄 扫描+刷新", size="sm", scale=1,
+                # Walks D:\Work\... and upserts any new project folder
+                # so this dropdown picks up folders created since startup.
+            )
+        scan_status_md = gr.Markdown(value="", visible=True)
         with gr.Row():
             track_version = gr.Checkbox(
                 label="记录此次版本(写入 quote_versions 表)",
@@ -86,8 +93,8 @@ def build_quote_tab():
             outputs=[report_md, download],
         )
         refresh_proj_btn.click(
-            fn=lambda: gr.update(choices=list_project_picker_choices()),
-            outputs=project_pick,
+            fn=scan_and_refresh_project_choices,
+            outputs=[project_pick, scan_status_md],
         )
 
 
