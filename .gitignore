@@ -50,5 +50,7 @@ data/*.xls
 data/~$*
 # BOM reference files (user-provided, may contain proprietary catalog data)
 data/References/
+# Per-run staging dir for quote format (input copy + output land here)
+data/quote_workspace/
 logs/
 *.log

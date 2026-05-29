@@ -65,13 +65,19 @@ def build_quote_tab() -> dict:
         scan_status_md = gr.Markdown(value="", visible=True)
         with gr.Row():
             track_version = gr.Checkbox(
-                label="记录此次版本(写入 quote_versions 表)",
+                label="记录此次版本",
+                info="写入 quote_versions 表(强烈建议保持开启)",
                 value=True,
             )
-            version_notes = gr.Textbox(
-                label="版本备注(可选)",
-                placeholder="例如:第二轮报价、调整折扣后版本",
+            archive_to_project = gr.Checkbox(
+                label="📂 同时归档到项目文件夹",
+                info="把 .formatted.xlsx 复制一份到关联项目的文件夹根目录",
+                value=False,
             )
+        version_notes = gr.Textbox(
+            label="版本备注(可选)",
+            placeholder="例如:第二轮报价、调整折扣后版本",
+        )
 
         with gr.Accordion("跳过规则(高级)", open=False):
             with gr.Row():
@@ -94,6 +100,7 @@ def build_quote_tab() -> dict:
                 skip_logo, skip_columns, skip_model,
                 skip_server, skip_oem, skip_ft20,
                 project_pick, track_version, version_notes,
+                archive_to_project,
             ],
             outputs=[report_md, download],
         )

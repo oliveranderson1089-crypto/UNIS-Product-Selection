@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -21,6 +21,31 @@ from ..config import get_config
 from .models import Base, Product
 
 logger = logging.getLogger(__name__)
+
+
+# Lightweight schema patches for tables that exist but predate a column
+# add. `Base.metadata.create_all()` only adds missing TABLES, not missing
+# columns, so we patch in-place. Each entry: (table_name, column_name,
+# column_ddl_after_name). Idempotent: skipped when the column already
+# exists.
+_COLUMN_PATCHES = [
+    ("quote_versions", "archived_path", "VARCHAR(1024)"),
+]
+
+
+def _apply_column_patches(engine: Engine) -> None:
+    """Add columns added in newer schema versions to pre-existing tables."""
+    insp = inspect(engine)
+    existing_tables = set(insp.get_table_names())
+    for table, col, ddl in _COLUMN_PATCHES:
+        if table not in existing_tables:
+            continue  # create_all will produce it with the column already
+        cols = {c["name"] for c in insp.get_columns(table)}
+        if col in cols:
+            continue
+        logger.info("schema: adding %s.%s (%s)", table, col, ddl)
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
 
 
 class Database:
@@ -38,6 +63,7 @@ class Database:
     # ---- schema -----------------------------------------------------------
     def init_schema(self) -> None:
         Base.metadata.create_all(self.engine)
+        _apply_column_patches(self.engine)
 
     # ---- session ----------------------------------------------------------
     @contextmanager

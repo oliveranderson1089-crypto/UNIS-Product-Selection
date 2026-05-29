@@ -292,6 +292,11 @@ class QuoteVersion(Base):
     )
     notes:             Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
+    # Filled in by `projects.archive_quote_to_project()` when the user
+    # opts to drop the .formatted.xlsx into the linked project's folder.
+    # Stays NULL when archiving wasn't requested or no project is linked.
+    archived_path:     Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
     project:           Mapped[Project | None] = relationship()
 
 

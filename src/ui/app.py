@@ -27,7 +27,7 @@ from .select_page import build_select_tab
 # walks complete in well under a second on a typical SSD) but snappy
 # enough that newly-created project folders show up before the next
 # manual click. Change here if you want a different default.
-AUTO_SCAN_INTERVAL_SECONDS = 60
+AUTO_SCAN_INTERVAL_SECONDS = 3600
 
 
 def build_app() -> gr.Blocks:

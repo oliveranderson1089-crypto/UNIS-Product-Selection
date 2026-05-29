@@ -300,14 +300,17 @@ def format_quote_ui(
     project_ref: str | None = None,
     track_version: bool = True,
     notes: str | None = None,
+    archive_to_project: bool = False,
 ) -> tuple[str, str | None]:
     """
     Gradio callback for quote format.
 
     `project_ref`: optional project id ("12") or name to link the resulting
         QuoteVersion to. Empty string / None → fall back to path-based
-        auto-inference.
+        auto-inference, then filename-based inference.
     `track_version`: if False, skip writing the QuoteVersion row entirely.
+    `archive_to_project`: if True AND a project gets linked, copy the
+        .formatted.xlsx into that project's folder.
 
     Returns (markdown_report, downloadable_file_path).
     """
@@ -317,6 +320,7 @@ def format_quote_ui(
     from pathlib import Path
     from ..quotes import DEFAULT_RULES, format_quote
     from ..quotes.exceptions import QuoteError
+    from ..quotes.workspace import stage_input
 
     skip_names = set()
     if skip_logo: skip_names.add("remove_h3c_logo")
@@ -327,7 +331,16 @@ def format_quote_ui(
     if skip_ft20_template: skip_names.add("fill_r3800ft20_template")
 
     rules = [r for r in DEFAULT_RULES if r.name not in skip_names]
-    src = Path(input_path)
+
+    # Stage the upload into data/quote_workspace/<ts>__<stem>/ so Excel
+    # COM doesn't choke on Gradio's AppData/Local/Temp paths. The output
+    # ends up in the same workspace subdir alongside the source.
+    user_upload = Path(input_path)
+    try:
+        src = stage_input(user_upload)
+    except Exception as exc:                                          # noqa: BLE001
+        logger.exception("stage_input failed")
+        return (f"❌ **暂存输入文件失败:** `{exc}`", None)
     out = src.with_name(src.stem + ".formatted.xlsx")
 
     try:
@@ -340,6 +353,8 @@ def format_quote_ui(
 
     # ---- Record QuoteVersion (best-effort, never breaks the format) ----
     version_md = ""
+    archive_md = ""
+    summary = None
     if track_version:
         from ..projects import record_quote_version
         ref = (project_ref or "").strip() or None
@@ -365,12 +380,38 @@ def format_quote_ui(
     else:
         version_md = "\n> ⏭️ 已跳过版本记录(取消勾选「记录此次版本」)"
 
+    # ---- Archive to project folder (only if version + project both OK)
+    if (
+        track_version and archive_to_project and summary is not None
+        and summary.project_id is not None
+    ):
+        from ..projects import archive_quote_to_project
+        dest = archive_quote_to_project(summary.id)
+        if dest is not None:
+            archive_md = (
+                f"\n> 📂 已归档到项目文件夹:`{dest}`"
+            )
+        else:
+            archive_md = (
+                "\n> ⚠️ 归档失败 — 项目文件夹可能已挪走或输出文件丢失"
+                "(详见日志)"
+            )
+    elif archive_to_project and track_version and (
+        summary is None or summary.project_id is None
+    ):
+        archive_md = (
+            "\n> ⏭️ 跳过归档:没有关联到任何项目"
+            "(打开自动关联或手动选项目即可)"
+        )
+
     lines = [
         f"✅ **格式化完成** — 应用 **{report.applied_count}** / {len(report.rule_results)} 条规则"
-        + version_md,
+        + version_md + archive_md,
         "",
-        f"- 输入: `{src.name}`",
+        f"- 输入(原始): `{user_upload.name}`",
+        f"- 输入(工作区): `{src}`",
         f"- 输出: `{out.name}` ({out.stat().st_size // 1024} KB)",
+        f"- 工作区目录: `{src.parent}`",
     ]
     if report.conversion_method:
         emoji = "✨" if report.conversion_method == "com" else "⚠️"
@@ -556,6 +597,7 @@ def silent_scan_for_timer(
 
 def render_quote_versions_md(project_id: int) -> str:
     """Markdown table of recent QuoteVersion rows for one project."""
+    from pathlib import Path
     from ..projects import list_quote_versions
     rows = list_quote_versions(project_id=project_id, limit=20)
     if not rows:
@@ -564,15 +606,20 @@ def render_quote_versions_md(project_id: int) -> str:
     lines = [
         f"### 📋 报价版本历史 (最近 {len(rows)} 条)",
         "",
-        "| #ID | 生成时间 | 源文件 | 应用规则 | 方式 | 备注 |",
-        "|---|---|---|---|---|---|",
+        "| #ID | 生成时间 | 源文件 | 规则 | 方式 | 归档文件 | 备注 |",
+        "|---|---|---|---|---|---|---|",
     ]
     for v in rows:
         notes = (v.notes or "").replace("|", "/")[:30]
+        if v.archived_path:
+            arch_path = Path(v.archived_path)
+            archived = f"✅ `{arch_path.name}`"
+        else:
+            archived = "⬜ _未归档_"
         lines.append(
             f"| **{v.id}** | {v.generated_at:%Y-%m-%d %H:%M} | "
             f"`{v.source_filename}` | {v.applied_count}/{v.total_rules} | "
-            f"{v.formatter_method} | {notes} |"
+            f"{v.formatter_method} | {archived} | {notes} |"
         )
     return "\n".join(lines)
 

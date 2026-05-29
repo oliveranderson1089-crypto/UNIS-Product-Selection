@@ -44,10 +44,12 @@ def cmd() -> None:
 @click.option("--no-track", is_flag=True,
               help="不向数据库写 QuoteVersion 记录(一次性试跑用)")
 @click.option("--note", default=None, help="给这次版本加一行备注")
+@click.option("--archive", is_flag=True,
+              help="格式化完成后,把 .formatted.xlsx 复制到关联项目的文件夹")
 def _format(input_path: Path, output_path: Path | None,
             only: tuple[str, ...], skip: tuple[str, ...],
             project_ref: str | None, no_track: bool,
-            note: str | None) -> None:
+            note: str | None, archive: bool) -> None:
     setup_logging()
     from ..quotes import DEFAULT_RULES, format_quote
     from ..quotes.exceptions import QuoteError
@@ -100,6 +102,24 @@ def _format(input_path: Path, output_path: Path | None,
             f"[dim]文件不在 work_dir 下任何已扫描的项目里;"
             f"可用 `quote versions list` 看到它,或下次 format 时加 --project 关联[/dim]"
         )
+
+    # ---- Optional archive into the project folder ----------------------
+    if archive:
+        if summary.project_id is None:
+            console.print(
+                "[yellow]⏭️ --archive 已忽略:没有关联到任何项目[/yellow]"
+            )
+        else:
+            from ..projects import archive_quote_to_project
+            dest = archive_quote_to_project(summary.id)
+            if dest:
+                console.print(
+                    f"[green]📂 已归档到项目文件夹: [bold]{dest}[/bold][/green]"
+                )
+            else:
+                console.print(
+                    "[red]❌ 归档失败 — 项目文件夹可能已挪走或输出文件丢失[/red]"
+                )
 
 
 @cmd.command("list-rules", help="列出全部可用的规则及其触发条件。")

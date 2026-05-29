@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +44,7 @@ class QuoteVersionSummary:
     total_rules: int
     rule_report: list[dict] = field(default_factory=list)
     notes: str | None = None
+    archived_path: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +385,71 @@ def _to_summary(session, qv: QuoteVersion) -> QuoteVersionSummary:
         total_rules=qv.total_rules,
         rule_report=list(qv.rule_report or []),
         notes=qv.notes,
+        archived_path=qv.archived_path,
     )
+
+
+# ---------------------------------------------------------------------------
+# Archive — copy the formatted output into the linked project's folder
+# ---------------------------------------------------------------------------
+def archive_quote_to_project(version_id: int) -> Path | None:
+    """
+    Copy the version's `output_file` into its linked project's folder.
+
+    Behaviors:
+      - No-op (return None) if the version has no project_id, the
+        output file is gone, or the project folder is gone.
+      - If the destination already exists with a different content, the
+        copy is renamed `<stem>_<timestamp><suffix>` to preserve the
+        prior file.
+      - Updates the QuoteVersion's `archived_path` to the destination so
+        the project history table can show "📂 已归档" with a link.
+
+    Returns the destination Path on success, None on any skip.
+    """
+    db = get_db()
+    with db.session() as s:
+        qv = s.scalar(select(QuoteVersion).where(QuoteVersion.id == version_id))
+        if qv is None or qv.project_id is None:
+            logger.info("archive: version #%s has no project link", version_id)
+            return None
+
+        proj = s.get(Project, qv.project_id)
+        if proj is None:
+            logger.warning("archive: project id=%s not found", qv.project_id)
+            return None
+
+        src = Path(qv.output_file)
+        if not src.exists():
+            logger.warning("archive: output file gone: %s", src)
+            return None
+
+        proj_folder = Path(proj.folder_path)
+        if not proj_folder.exists():
+            logger.warning("archive: project folder gone: %s", proj_folder)
+            return None
+
+        dest = proj_folder / src.name
+        # If a file with this name already exists AND it's a different
+        # file, timestamp-suffix the new one so prior versions survive.
+        if dest.exists() and dest.resolve() != src.resolve():
+            try:
+                same = (dest.stat().st_size == src.stat().st_size and
+                        dest.stat().st_mtime == src.stat().st_mtime)
+            except OSError:
+                same = False
+            if not same:
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                dest = proj_folder / f"{src.stem}_{stamp}{src.suffix}"
+
+        try:
+            if dest.resolve() != src.resolve():
+                shutil.copy(src, dest)
+            qv.archived_path = str(dest.resolve())
+            return dest
+        except Exception:                                             # noqa: BLE001
+            logger.exception("archive copy failed: %s -> %s", src, dest)
+            return None
 
 
 __all__ = [
@@ -395,4 +461,5 @@ __all__ = [
     "get_quote_version",
     "delete_quote_version",
     "set_quote_version_project",
+    "archive_quote_to_project",
 ]
