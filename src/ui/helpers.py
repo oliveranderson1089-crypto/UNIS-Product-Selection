@@ -720,14 +720,22 @@ def list_projects_md(
     return ("\n".join(lines), page_info, total_pages)
 
 
-def list_project_choices() -> list[tuple[str, str]]:
+def list_project_choices(search: str | None = None) -> list[tuple[str, str]]:
     """For populating the project-picker dropdown.
 
     Returns a list of (label, value) tuples. Value is the project id.
+
+    `search`: optional keyword. When given, the underlying query does an
+    OR match across name / display_name / customer (same broadened search
+    as the project list), so typing a project code, full name, or customer
+    narrows the dropdown. This powers the dedicated 🔍 search box above the
+    detail picker — Gradio's built-in `filterable` typeahead proved too
+    hidden to rely on, so we filter the choices server-side instead.
     """
     from ..projects import list_projects
 
-    items = list_projects()
+    kw = (search or "").strip()
+    items = list_projects(search=kw) if kw else list_projects()
     return [
         (f"[{p.id}] {p.assigner} / {p.name}"
          + (f"  ({p.customer})" if p.customer else ""),

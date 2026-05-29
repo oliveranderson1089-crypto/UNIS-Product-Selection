@@ -76,14 +76,23 @@ def build_projects_tab() -> dict:
         gr.Markdown("---")
         gr.Markdown("### 🔍 项目详情")
 
+        # Dedicated search box that filters the picker's choices server-side.
+        # Gradio's built-in `filterable` typeahead on the dropdown proved
+        # undiscoverable/unreliable for the user, so we drive the choices
+        # explicitly: typing here narrows the dropdown below to matching
+        # projects (OR match on code / full name / customer).
+        detail_search = gr.Textbox(
+            label="🔍 搜索项目(输入关键字,下方下拉自动过滤)",
+            placeholder="项目代码 / 全称 / 客户(任一字段含此关键字即命中)",
+        )
         with gr.Row():
             project_picker = gr.Dropdown(
-                label="选择项目(可输入关键字过滤)",
+                label="选择项目",
                 choices=list_project_choices(),
                 value=None,
                 scale=4,
-                # filterable=True turns the dropdown into a type-ahead
-                # combobox. Critical for usability once projects > ~20.
+                # Keep filterable as a secondary in-dropdown typeahead, but
+                # the 🔍 box above is the primary, discoverable search path.
                 filterable=True,
                 allow_custom_value=False,
             )
@@ -151,6 +160,20 @@ def build_projects_tab() -> dict:
             fn=_on_next,
             inputs=[page_state, assigner_in, status_in, customer_in],
             outputs=[list_md, page_info_md, page_state],
+        )
+
+        # ----- Detail search: narrow the picker's choices live ---------
+        # As the user types, re-query and replace the dropdown's choices.
+        # We DON'T force a selection — the user still picks from the
+        # narrowed list. If the previously-selected id is no longer in the
+        # filtered set, Gradio clears the selection (value falls out of
+        # choices), which is the expected behaviour.
+        def _on_detail_search(kw):
+            return gr.update(choices=list_project_choices(kw))
+        detail_search.change(
+            fn=_on_detail_search,
+            inputs=detail_search,
+            outputs=project_picker,
         )
 
         project_picker.change(fn=show_project_md, inputs=project_picker, outputs=detail_md)
