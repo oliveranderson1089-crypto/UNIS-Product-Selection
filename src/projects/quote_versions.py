@@ -13,6 +13,7 @@ formatter — we just log a warning.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -87,6 +88,12 @@ def _do_record(report, project_ref, auto_infer, notes) -> QuoteVersionSummary:
                 )
         elif auto_infer:
             project = infer_project_from_path(s, Path(report.input_path))
+            if project is None:
+                # Path didn't match (e.g. file lives in Downloads). Fall
+                # back to filename-prefix matching against project names.
+                project = infer_project_from_filename(
+                    s, Path(report.input_path).name,
+                )
             if project is not None:
                 project_id = project.id
 
@@ -173,6 +180,120 @@ def _resolve_project(session, ref: str | int) -> Project | None:
     except (TypeError, ValueError):
         stmt = stmt.where(Project.name == str(ref))
     return session.scalar(stmt)
+
+
+# ---------------------------------------------------------------------------
+# Filename-prefix inference (fallback when the file isn't under work_dir)
+# ---------------------------------------------------------------------------
+# H3C 配置器 exports follow a naming convention:
+#   <project_id_or_short_name>-<description>_<YYYYMMDD>.xls
+# e.g.:
+#   29JD-测控间显示屏完善建设交换机_20260527.xls         → 29JD
+#   中国原子能工业-生产管理系统安全可靠服务器_20260529.xls → 中国原子能工业
+#   W1241-服务器_20260525.xls                            → W1241
+# The leading separator-delimited token is almost always the project's
+# folder name or a prefix of it. We exploit that for inference.
+#
+# Match priority:
+#   1. Whole cleaned stem == project.name OR project.display_name (exact)
+#   2. First token == project.name (exact, case-insensitive)
+#   3. project.name startswith(token) (project name extends token, e.g.
+#      "中国原子能工业有限公司" extends "中国原子能工业")
+# At each tier, if more than one DISTINCT project matches, we return None
+# (ambiguous — let the user pick manually rather than risk wrong link).
+
+# Stamps the configurator and the user typically append to filenames.
+_DATE_SUFFIX_RE   = re.compile(r"[_\-\s]?\d{6,8}$")
+_PARENS_NUM_RE    = re.compile(r"[_\-\s]?\(\d+\)$")
+_FINAL_MARKER_RE  = re.compile(
+    r"[_\-\s]?(终版|最终版?|final|已选型|定稿|确认版)$", re.IGNORECASE,
+)
+# Token separators in H3C export naming
+_TOKEN_SPLIT_RE   = re.compile(r"[-_ ]")
+
+# Minimum length for a token to be considered a meaningful match. Two
+# characters is too loose (would match e.g. "10" against many things).
+_MIN_TOKEN_LEN = 3
+
+
+def infer_project_from_filename(session, filename: str) -> Project | None:
+    """
+    Pick a Project whose name matches the filename's leading token.
+
+    Returns None when nothing matches OR when the match is ambiguous
+    (two+ distinct projects tie). Always safe: never guesses wrong by
+    picking arbitrarily.
+    """
+    stem = Path(filename).stem
+    cleaned = _clean_filename_stem(stem)
+    if not cleaned:
+        return None
+
+    projects = list(session.scalars(select(Project)))
+    if not projects:
+        return None
+
+    cleaned_lower = cleaned.lower()
+
+    # ----- Tier 1: full cleaned stem matches a project name/display ----
+    full_matches: list[Project] = []
+    for p in projects:
+        for cand in (p.display_name, p.name):
+            if cand and cleaned_lower == cand.strip().lower():
+                full_matches.append(p)
+                break
+    unique = {p.id: p for p in full_matches}
+    if len(unique) == 1:
+        return next(iter(unique.values()))
+    if len(unique) > 1:
+        return None   # ambiguous
+
+    # ----- Tier 2: leading token matches a project name ----------------
+    token = _TOKEN_SPLIT_RE.split(cleaned, maxsplit=1)[0].strip()
+    if not token or len(token) < _MIN_TOKEN_LEN:
+        return None
+
+    token_lower = token.lower()
+    exact: list[Project] = []
+    startswith: list[Project] = []
+    for p in projects:
+        name = (p.name or "").strip()
+        disp = (p.display_name or "").strip()
+        name_l = name.lower()
+        disp_l = disp.lower()
+
+        if name and (name_l == token_lower or disp_l == token_lower):
+            exact.append(p)
+            continue
+        # project.name or its display extends the token
+        if name and len(name) >= _MIN_TOKEN_LEN and name_l.startswith(token_lower):
+            startswith.append(p)
+            continue
+        if disp and len(disp) >= _MIN_TOKEN_LEN and disp_l.startswith(token_lower):
+            startswith.append(p)
+            continue
+
+    pool = exact or startswith
+    unique = {p.id: p for p in pool}
+    if len(unique) == 1:
+        return next(iter(unique.values()))
+    return None   # zero matches OR ambiguous
+
+
+def _clean_filename_stem(stem: str) -> str:
+    """Strip trailing date stamps, '(2)' suffixes, and final-version markers."""
+    s = stem
+    # Apply each cleanup repeatedly until no more match (handles
+    # "_20260527 (2)" style chains)
+    for _ in range(3):
+        before = s
+        s = _PARENS_NUM_RE.sub("", s).strip()
+        s = _DATE_SUFFIX_RE.sub("", s).strip()
+        s = _FINAL_MARKER_RE.sub("", s).strip()
+        s = s.strip("_- ")
+        if s == before:
+            break
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +390,7 @@ __all__ = [
     "QuoteVersionSummary",
     "record_quote_version",
     "infer_project_from_path",
+    "infer_project_from_filename",
     "list_quote_versions",
     "get_quote_version",
     "delete_quote_version",

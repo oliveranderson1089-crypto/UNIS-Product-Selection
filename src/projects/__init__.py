@@ -4,6 +4,7 @@ from .quote_versions import (
     QuoteVersionSummary,
     delete_quote_version,
     get_quote_version,
+    infer_project_from_filename,
     infer_project_from_path,
     list_quote_versions,
     record_quote_version,
@@ -38,4 +39,5 @@ __all__ = [
     "delete_quote_version",
     "set_quote_version_project",
     "infer_project_from_path",
+    "infer_project_from_filename",
 ]
