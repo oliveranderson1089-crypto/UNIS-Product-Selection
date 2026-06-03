@@ -43,6 +43,13 @@ INTERNAL_COMPONENT_KEYWORDS = (
     "SAS电缆",
     "超级电容模块",
     "Flash掉电保护模块",
+    # ---- added per R3810 G6 sightings (2服务器 file). Keep in sync with
+    # com_formatter._INTERNAL_COMPONENT_KEYWORDS — that COM list is the one
+    # that actually scrubs the customer-facing 价格汇总表 描述. ----
+    "CPU散热器",            # "FT S5000C 2U标准型羊角热管CPU散热器-5201K05U"
+    "挂耳组件",             # "R3810 G6 2U智能左挂耳组件(CTO&BTO)"
+    "CPU主板",              # "2U机架式服务器双路CPU主板(CMCTO)"
+    "PCIE线",               # "PCIE线-0.08m-(MCIO X8下弯)-..." (线/uppercase variant)
 )
 
 # Models that indicate this quote needs server cleanup

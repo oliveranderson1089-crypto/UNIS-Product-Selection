@@ -129,45 +129,43 @@ def _convert_via_com(src: Path, dst: Path) -> None:
     """
     Drive Excel/WPS via COM. Robust and lossless.
 
-    Notes:
-      - `win32com.client.Dispatch` re-uses an already-running Excel
-        instance if one is open; we tolerate that.
-      - `DisplayAlerts=False` suppresses the "compatibility checker" pop-up.
-      - We always Quit() in finally, otherwise leaked excel.exe processes
-        pile up across runs.
+    `excel_session` owns the whole process lifecycle — per-thread COM init
+    (so this works on the Gradio UI's worker threads, not just the main
+    thread), a dedicated hidden instance with `DisplayAlerts=False` (which
+    suppresses the "compatibility checker" pop-up on .xls open/save), and
+    guaranteed teardown (Quit + gc + a kill-by-PID backstop) so a long-running
+    process can't accumulate orphan excel.exe instances and silently degrade
+    to the lossy xlrd path.
     """
-    import pythoncom        # noqa: F401 — initializes COM threading state
-    import win32com.client as win32
+    from ._excel_com import excel_session
 
     # AbsolutePath required — COM resolves relative paths against the
     # Office process's own working dir, which is unpredictable.
     src_abs = str(src.resolve())
     dst_abs = str(dst.resolve())
 
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    excel.ScreenUpdating = False
-
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(
-            src_abs,
-            UpdateLinks=0,                  # don't try to update external refs
-            ReadOnly=True,                  # belt-and-suspenders: never write back to .xls
-            IgnoreReadOnlyRecommended=True,
-        )
-        wb.SaveAs(dst_abs, FileFormat=_XL_OPEN_XML_WORKBOOK)
-    finally:
+    with excel_session() as excel:
+        wb = None
         try:
-            if wb is not None:
-                wb.Close(SaveChanges=False)
-        except Exception:                                         # noqa: BLE001
-            pass
-        try:
-            excel.Quit()
-        except Exception:                                         # noqa: BLE001
-            pass
+            wb = excel.Workbooks.Open(
+                src_abs,
+                UpdateLinks=0,                  # don't try to update external refs
+                ReadOnly=True,                  # belt-and-suspenders: never write back to .xls
+                IgnoreReadOnlyRecommended=True,
+            )
+            wb.SaveAs(dst_abs, FileFormat=_XL_OPEN_XML_WORKBOOK)
+        finally:
+            try:
+                if wb is not None:
+                    wb.Close(SaveChanges=False)
+            except Exception:                                     # noqa: BLE001
+                pass
+            wb = None
+        # Drop the app reference too (see com_formatter.format_via_com): while
+        # the caller's ``as excel`` binding is live the COM object can't be
+        # released, so the session would have to force-kill instead of letting
+        # excel.exe exit cleanly. Nulling here keeps the common path tidy.
+        excel = None
 
 
 # ---------------------------------------------------------------------------

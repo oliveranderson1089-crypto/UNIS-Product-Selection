@@ -1,6 +1,7 @@
 """Quote-sheet editing — apply formatting rules to H3C 配置器 exports."""
 
 from .exceptions import (
+    ComFormatError,
     QuoteError,
     RuleError,
     SheetNotFoundError,
@@ -18,4 +19,5 @@ __all__ = [
     "UnsupportedFormatError",
     "SheetNotFoundError",
     "RuleError",
+    "ComFormatError",
 ]

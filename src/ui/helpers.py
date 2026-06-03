@@ -346,7 +346,12 @@ def format_quote_ui(
     try:
         report = format_quote(src, out, rules=rules)
     except QuoteError as exc:
-        return (f"❌ **格式化失败:** `{exc}`", None)
+        # QuoteError messages are user-facing guidance and may span multiple
+        # lines (e.g. the COM hard-guard's restart/refresh recipe). Render as a
+        # blockquote so every line survives — inline-code backticks would
+        # collapse it into one cramped, unreadable span.
+        detail = str(exc).replace("\n", "\n> ")
+        return (f"❌ **格式化失败:**\n\n> {detail}", None)
     except Exception as exc:                                      # noqa: BLE001
         logger.exception("format_quote crashed")
         return (f"❌ **意外错误:** `{exc}`", None)

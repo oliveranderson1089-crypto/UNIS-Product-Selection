@@ -30,10 +30,10 @@ from __future__ import annotations
 import logging
 import platform
 import re
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
+
+from ._excel_com import excel_session
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def format_via_com(
         enabled_rules = set(KNOWN_RULES)
 
     report = ComFormatReport(method="com")
-    with _excel_session() as excel:
+    with excel_session() as excel:
         wb = excel.Workbooks.Open(
             str(input_path.resolve()),
             UpdateLinks=0,
@@ -126,6 +126,14 @@ def format_via_com(
                 wb.Close(SaveChanges=False)
             except Exception:                                      # noqa: BLE001
                 pass
+            wb = None
+        # Drop the workbook AND the app reference before the session's
+        # teardown runs: while the caller's ``as excel`` binding is live, the
+        # COM object can't be released, so Quit()+gc can't let excel.exe exit
+        # cleanly and the kill backstop has to fire on every run. Nulling here
+        # lets the common path exit tidily; the backstop stays for the rare
+        # case a reference genuinely lingers.
+        excel = None
 
     return report
 
@@ -138,27 +146,6 @@ KNOWN_RULES = (
     "swap_oem_service_line",
     "fill_r3800ft20_template",
 )
-
-
-# ---------------------------------------------------------------------------
-# Excel session lifecycle
-# ---------------------------------------------------------------------------
-@contextmanager
-def _excel_session() -> Iterator:
-    """Spin up an isolated Excel COM instance; always Quit() on exit."""
-    import win32com.client as win32
-
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    excel.ScreenUpdating = False
-    try:
-        yield excel
-    finally:
-        try:
-            excel.Quit()
-        except Exception:                                          # noqa: BLE001
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +319,13 @@ _INTERNAL_COMPONENT_KEYWORDS = (
     "GPU Switch计算模块",   # e.g. "R5330 G7 8GPU Switch计算模块"
     "硬盘扩展模块",         # e.g. "R5300 G6 12LFF硬盘扩展模块"
     "GPU假面板",            # e.g. "10 * R5300 G6 GPU假面板" — slot fillers
+    # ---- added per R3810 G6 sightings (2服务器 file) --------------------
+    "CPU散热器",            # e.g. "FT S5000C 2U标准型羊角热管CPU散热器-5201K05U".
+                            # Safe: mainboard rows say "散热器*2", never "CPU散热器".
+    "挂耳组件",             # e.g. "R3810 G6 2U智能左挂耳组件(CTO&BTO)" — chassis ear bracket.
+    "CPU主板",              # e.g. "2U机架式服务器双路CPU主板(CMCTO)" — bare board SKU.
+    "PCIE线",               # e.g. "PCIE线-0.08m-(MCIO X8下弯)-..." — internal cable.
+                            # 线/uppercase variant; PCIe电缆 already covers the 电缆 ones.
 )
 
 # Detects rows where 价格汇总表 references a server (R4930, R3935, etc.)

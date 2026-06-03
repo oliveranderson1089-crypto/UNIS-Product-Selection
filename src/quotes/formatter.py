@@ -29,6 +29,7 @@ from .com_formatter import (
     com_available,
     format_via_com,
 )
+from .exceptions import ComFormatError
 from .reader import open_quote
 from .rules import DEFAULT_RULES
 from .rules.base import QuoteRule, RuleResult
@@ -87,15 +88,48 @@ def format_quote(
                 input_path, output_path, enabled_rule_names,
             )
         except Exception as exc:                                  # noqa: BLE001
+            # HARD GUARD — do NOT silently fall back to openpyxl here.
+            #
+            # We only reach this branch when COM was *expected* to work
+            # (Windows + pywin32 importable), so a failure is almost always a
+            # transient resource problem: after a long-running session, hidden
+            # DispatchEx excel.exe instances pile up until a new one can no
+            # longer start. The OLD behavior quietly degraded to the
+            # openpyxl/xlrd path, which drops images, merged cells and column
+            # widths and emits a ~18KB formatless table — exactly the
+            # "跑久了就丢格式、重启就好" symptom users reported, with no signal
+            # that anything went wrong.
+            #
+            # Refusing to degrade and raising a clear, actionable error is the
+            # whole point: the UI/CLI both surface QuoteError messages, so the
+            # user is told the fix (restart the program / refresh the page,
+            # which resets the resource pressure) instead of unknowingly
+            # shipping a broken quote. Callers that genuinely want the
+            # openpyxl path (non-Windows behavior, tests) pass prefer_com=False.
             logger.warning(
-                "COM formatter failed (%s); falling back to openpyxl path", exc,
+                "COM formatter failed (%s); refusing to fall back to the "
+                "lossy openpyxl path (hard guard).", exc,
             )
+            raise ComFormatError(_COM_HARD_GUARD_MSG) from exc
 
     return _format_via_openpyxl(
         input_path, output_path,
         rules=rules, context=context,
         auto_convert_xls=auto_convert_xls,
     )
+
+
+# User-facing guidance shown when the COM hard guard trips. Chinese, because
+# that's the operator's language, and phrased as a concrete recovery recipe —
+# the failure is transient and these steps reliably clear it.
+_COM_HARD_GUARD_MSG = (
+    "Excel 自动化(COM)格式化失败,已主动中止,避免生成丢失图片/合并格/列宽的报价单。\n"
+    "这通常是程序在后台跑久了、Excel 进程堆积导致的临时故障,按下面任一步骤一般即可恢复:\n"
+    "  1. 刷新浏览器页面后重新上传;\n"
+    "  2. 若仍不行,重启本程序;\n"
+    "  3. 确认源文件没有在 Excel / WPS 里打开占用。\n"
+    "恢复后再次格式化即可得到带完整格式的结果。"
+)
 
 
 # ---------------------------------------------------------------------------
