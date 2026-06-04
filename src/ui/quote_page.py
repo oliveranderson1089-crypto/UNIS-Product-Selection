@@ -48,15 +48,23 @@ def build_quote_tab() -> dict:
             )
 
         # ---- Project linking + versioning controls -------------------
+        # Dedicated search box that filters the picker's choices server-side
+        # as the user types — the primary, discoverable way to find a project
+        # once the list grows long (the dropdown's built-in `filterable`
+        # typeahead proved too hidden to rely on).
+        proj_search = gr.Textbox(
+            label="🔍 搜索项目(可选,输入关键字过滤下方下拉)",
+            placeholder="项目代码 / 全称 / 客户(任一字段含此关键字即命中)",
+        )
         with gr.Row():
             project_pick = gr.Dropdown(
-                label="📌 关联项目(留空 = 按文件路径/文件名自动推断,可输入关键字过滤)",
+                label="📌 关联项目(留空 = 按文件路径/文件名自动推断)",
                 choices=list_project_picker_choices(),
                 value="",
                 interactive=True,
                 allow_custom_value=False,
-                # filterable=True: as the project list grows past
-                # ~20, this dropdown without filtering is unusable.
+                # Keep filterable as a secondary in-dropdown typeahead; the
+                # 🔍 box above is the primary search path.
                 filterable=True,
                 scale=4,
             )
@@ -65,6 +73,15 @@ def build_quote_tab() -> dict:
                 # Walks D:\Work\... and upserts any new project folder
                 # so this dropdown picks up folders created since startup.
             )
+
+        # As the user types, re-query and replace the dropdown's choices.
+        # The "(自动按文件路径推断)" sentinel is preserved by
+        # list_project_picker_choices(include_none=True).
+        def _on_proj_search(kw):
+            return gr.update(choices=list_project_picker_choices(search=kw))
+        proj_search.change(
+            fn=_on_proj_search, inputs=proj_search, outputs=project_pick,
+        )
         scan_status_md = gr.Markdown(value="", visible=True)
         with gr.Row():
             track_version = gr.Checkbox(

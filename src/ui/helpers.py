@@ -385,29 +385,30 @@ def format_quote_ui(
     else:
         version_md = "\n> ⏭️ 已跳过版本记录(取消勾选「记录此次版本」)"
 
-    # ---- Archive to project folder (only if version + project both OK)
-    if (
-        track_version and archive_to_project and summary is not None
-        and summary.project_id is not None
-    ):
-        from ..projects import archive_quote_to_project
-        dest = archive_quote_to_project(summary.id)
-        if dest is not None:
+    # ---- Archive to project folder --------------------------------------
+    # Decoupled from version tracking: if the user ticked 归档, we archive
+    # whenever a project can be resolved — regardless of whether a version
+    # row was recorded. When a version WAS recorded we route through
+    # archive_quote_to_project so its `archived_path` gets stamped too.
+    # Either path drills into a matching sub-project sub-folder (e.g.
+    # 57/57-GPU服务器) and only falls back to the level-1 folder when none.
+    if archive_to_project:
+        ref = (project_ref or "").strip() or None
+        if track_version and summary is not None and summary.project_id is not None:
+            from ..projects import archive_quote_to_project
+            dest = archive_quote_to_project(summary.id)
             archive_md = (
-                f"\n> 📂 已归档到项目文件夹:`{dest}`"
+                f"\n> 📂 已归档到:`{dest}`" if dest is not None
+                else "\n> ⚠️ 归档失败 — 项目文件夹可能已挪走或输出文件丢失(详见日志)"
             )
         else:
-            archive_md = (
-                "\n> ⚠️ 归档失败 — 项目文件夹可能已挪走或输出文件丢失"
-                "(详见日志)"
+            # Version tracking OFF (or record failed / no link) → archive
+            # directly from the output file, resolving the project on its own.
+            from ..projects import archive_quote_file
+            dest, msg = archive_quote_file(
+                out, project_ref=ref, input_path=user_upload,
             )
-    elif archive_to_project and track_version and (
-        summary is None or summary.project_id is None
-    ):
-        archive_md = (
-            "\n> ⏭️ 跳过归档:没有关联到任何项目"
-            "(打开自动关联或手动选项目即可)"
-        )
+            archive_md = f"\n> {'📂' if dest is not None else '⏭️'} {msg}"
 
     lines = [
         f"✅ **格式化完成** — 应用 **{report.applied_count}** / {len(report.rule_results)} 条规则"
@@ -441,18 +442,29 @@ def format_quote_ui(
     return ("\n".join(lines), str(out))
 
 
-def list_project_picker_choices(include_none: bool = True) -> list[tuple[str, str]]:
+def list_project_picker_choices(
+    include_none: bool = True,
+    search: str | None = None,
+) -> list[tuple[str, str]]:
     """
     (label, value) pairs for picking a project in dropdowns.
 
     Value is the project id as a string; label is "[id] assigner/name (customer)".
-    First option (when include_none=True) is the "auto-infer / none" sentinel.
+    First option (when include_none=True) is the "auto-infer / none" sentinel,
+    which is preserved even when a search is active so the user can always
+    fall back to auto-inference.
+
+    `search`: optional keyword. OR-matched across name / display_name /
+    customer (same as the project list). Powers the dedicated 🔍 search box
+    above the 关联项目 dropdown so a long project list stays usable.
     """
     from ..projects import list_projects
     out: list[tuple[str, str]] = []
     if include_none:
         out.append(("(自动按文件路径推断)", ""))
-    for p in list_projects():
+    kw = (search or "").strip()
+    items = list_projects(search=kw) if kw else list_projects()
+    for p in items:
         label = f"[{p.id}] {p.assigner}/{p.name}"
         if p.customer:
             label += f" — {p.customer}"

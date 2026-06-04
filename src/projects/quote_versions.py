@@ -196,13 +196,15 @@ def _resolve_project(session, ref: str | int) -> Project | None:
 # The leading separator-delimited token is almost always the project's
 # folder name or a prefix of it. We exploit that for inference.
 #
-# Match priority:
-#   1. Whole cleaned stem == project.name OR project.display_name (exact)
-#   2. First token == project.name (exact, case-insensitive)
-#   3. project.name startswith(token) (project name extends token, e.g.
-#      "中国原子能工业有限公司" extends "中国原子能工业")
-# At each tier, if more than one DISTINCT project matches, we return None
-# (ambiguous — let the user pick manually rather than risk wrong link).
+# Match priority (each tier returns None if 2+ DISTINCT projects tie —
+# ambiguous, let the user pick manually rather than risk a wrong link):
+#   1.  Whole cleaned stem == project.name OR display_name (exact)
+#   2a. project.name is a SEPARATOR-BOUNDED prefix of the cleaned stem —
+#       "57" matches "57-GPU服务器" but NOT "57S-第四批存储" (the boundary
+#       check is what makes short 2-char codes safe). Longest name wins.
+#   2b. the filename's leading token is a prefix of project.name —
+#       "中国原子能工业" → "中国原子能工业有限公司" (folder name longer than
+#       what the export put in the filename). Legacy long-token path.
 
 # Stamps the configurator and the user typically append to filenames.
 _DATE_SUFFIX_RE   = re.compile(r"[_\-\s]?\d{6,8}$")
@@ -212,9 +214,17 @@ _FINAL_MARKER_RE  = re.compile(
 )
 # Token separators in H3C export naming
 _TOKEN_SPLIT_RE   = re.compile(r"[-_ ]")
+# Same set, as literals, for the boundary-prefix check in Tier 2a.
+_SEPS = ("-", "_", " ")
 
-# Minimum length for a token to be considered a meaningful match. Two
-# characters is too loose (would match e.g. "10" against many things).
+# Minimum length for a project NAME to be eligible for boundary-prefix
+# matching (Tier 2a). Short H3C codes are routinely 2 chars ("57", "97"),
+# and the separator boundary keeps them safe, so 2 is allowed here.
+_MIN_NAME_LEN = 2
+
+# Minimum length for a filename TOKEN to drive the looser "project name
+# EXTENDS the token" match (Tier 2b). Kept at 3 so a 2-char token can't
+# sweep up every project that happens to start with those two chars.
 _MIN_TOKEN_LEN = 3
 
 
@@ -248,35 +258,56 @@ def infer_project_from_filename(session, filename: str) -> Project | None:
     if len(unique) == 1:
         return next(iter(unique.values()))
     if len(unique) > 1:
-        return None   # ambiguous
+        return None   # ambiguous exact match — don't fall through to looser tiers
 
-    # ----- Tier 2: leading token matches a project name ----------------
+    # ----- Tier 2a: project name is a separator-bounded prefix ----------
+    # "57" matches "57-GPU服务器" (boundary after the code) but NOT
+    # "57S-第四批存储" (no boundary — "S" follows). Score by matched-name
+    # length so the most specific name wins ("585" over a stray "58").
+    best_len = 0
+    best: list[Project] = []
+    for p in projects:
+        matched = 0
+        for cand in (p.name, p.display_name):
+            if not cand:
+                continue
+            cl = cand.strip().lower()
+            if len(cl) < _MIN_NAME_LEN:
+                continue
+            if cleaned_lower == cl or any(
+                cleaned_lower.startswith(cl + sep) for sep in _SEPS
+            ):
+                matched = max(matched, len(cl))
+        if matched == 0:
+            continue
+        if matched > best_len:
+            best_len, best = matched, [p]
+        elif matched == best_len:
+            best.append(p)
+    if best:
+        unique = {p.id: p for p in best}
+        if len(unique) == 1:
+            return next(iter(unique.values()))
+        return None   # 2+ distinct projects tie on name length — ambiguous
+
+    # ----- Tier 2b: filename leading token is a prefix of project name --
+    # Handles the inverse: the folder name is LONGER than what the export
+    # wrote into the filename (e.g. token "中国原子能工业" →
+    # project "中国原子能工业有限公司").
     token = _TOKEN_SPLIT_RE.split(cleaned, maxsplit=1)[0].strip()
     if not token or len(token) < _MIN_TOKEN_LEN:
         return None
-
     token_lower = token.lower()
-    exact: list[Project] = []
-    startswith: list[Project] = []
+    extends: list[Project] = []
     for p in projects:
-        name = (p.name or "").strip()
-        disp = (p.display_name or "").strip()
-        name_l = name.lower()
-        disp_l = disp.lower()
-
-        if name and (name_l == token_lower or disp_l == token_lower):
-            exact.append(p)
-            continue
-        # project.name or its display extends the token
-        if name and len(name) >= _MIN_TOKEN_LEN and name_l.startswith(token_lower):
-            startswith.append(p)
-            continue
-        if disp and len(disp) >= _MIN_TOKEN_LEN and disp_l.startswith(token_lower):
-            startswith.append(p)
-            continue
-
-    pool = exact or startswith
-    unique = {p.id: p for p in pool}
+        for cand in (p.name, p.display_name):
+            if not cand:
+                continue
+            cl = cand.strip().lower()
+            if len(cl) >= _MIN_TOKEN_LEN and cl.startswith(token_lower):
+                extends.append(p)
+                break
+    unique = {p.id: p for p in extends}
     if len(unique) == 1:
         return next(iter(unique.values()))
     return None   # zero matches OR ambiguous
@@ -392,64 +423,171 @@ def _to_summary(session, qv: QuoteVersion) -> QuoteVersionSummary:
 # ---------------------------------------------------------------------------
 # Archive — copy the formatted output into the linked project's folder
 # ---------------------------------------------------------------------------
-def archive_quote_to_project(version_id: int) -> Path | None:
-    """
-    Copy the version's `output_file` into its linked project's folder.
+# Strips the formatter's ".formatted" infix so the cleaned stem lines up
+# with sub-folder names (output is "<name>_<date>.formatted.xlsx").
+_FORMATTED_INFIX_RE = re.compile(r"\.formatted$", re.IGNORECASE)
 
-    Behaviors:
-      - No-op (return None) if the version has no project_id, the
-        output file is gone, or the project folder is gone.
-      - If the destination already exists with a different content, the
-        copy is renamed `<stem>_<timestamp><suffix>` to preserve the
-        prior file.
-      - Updates the QuoteVersion's `archived_path` to the destination so
-        the project history table can show "📂 已归档" with a link.
 
-    Returns the destination Path on success, None on any skip.
+def _resolve_archive_dir(proj_folder: Path, output_filename: str) -> Path:
     """
+    Pick the deepest sensible folder under `proj_folder` to drop the archive.
+
+    The work-dir layout allows an optional sub-project level:
+
+        <assigner>/<customer>/                   ← proj_folder (level 1)
+        <assigner>/<customer>/<sub_project>/     ← optional (level 2)
+
+    When `proj_folder` has sub-folders and one matches the output file's
+    name, the file is archived INTO that sub-folder; otherwise it lands
+    directly in `proj_folder`. This implements the user's rule: "归档时
+    继续查找是否还有下一级,没有才存到当前的一级文件夹".
+
+    Matching (deliberately conservative — never guess wrong):
+      - exact: cleaned stem == sub-folder name                  (best)
+      - prefix: cleaned stem startswith sub-folder name         (folder is
+        a meaningful prefix of the file, e.g. file "57-GPU服务器_20260529"
+        → folder "57-GPU服务器")
+    A bare "folder name extends the stem" is NOT matched (too loose for
+    short codes). If two sub-folders tie for best, fall back to proj_folder.
+    """
+    try:
+        subdirs = [
+            d for d in proj_folder.iterdir()
+            if d.is_dir() and not d.name.startswith((".", "$"))
+        ]
+    except OSError:
+        return proj_folder
+    if not subdirs:
+        return proj_folder
+
+    stem = Path(output_filename).stem            # "<name>_<date>.formatted"
+    stem = _FORMATTED_INFIX_RE.sub("", stem)     # drop ".formatted"
+    stem = _clean_filename_stem(stem)            # drop date / (n) / 终版
+    if not stem:
+        return proj_folder
+    stem_l = stem.lower()
+
+    scored: list[tuple[int, Path]] = []
+    for d in subdirs:
+        dn = d.name.strip().lower()
+        if not dn:
+            continue
+        if stem_l == dn:
+            scored.append((10_000, d))                       # exact match
+        elif len(dn) >= _MIN_TOKEN_LEN and stem_l.startswith(dn):
+            scored.append((len(dn), d))                      # folder is a prefix
+    if not scored:
+        return proj_folder
+    scored.sort(key=lambda t: t[0], reverse=True)
+    # Ambiguity guard: two equally-good matches → don't guess, use level 1.
+    if len(scored) >= 2 and scored[0][0] == scored[1][0]:
+        return proj_folder
+    return scored[0][1]
+
+
+def _safe_dest(dest_dir: Path, src: Path) -> Path:
+    """Destination path inside `dest_dir`, timestamp-suffixed on conflict.
+
+    If a different file with the same name already exists, append
+    `_<timestamp>` to the stem so prior archived versions survive.
+    """
+    dest = dest_dir / src.name
+    if dest.exists() and dest.resolve() != src.resolve():
+        try:
+            same = (dest.stat().st_size == src.stat().st_size and
+                    dest.stat().st_mtime == src.stat().st_mtime)
+        except OSError:
+            same = False
+        if not same:
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dest = dest_dir / f"{src.stem}_{stamp}{src.suffix}"
+    return dest
+
+
+def archive_quote_file(
+    output_path: str | Path,
+    *,
+    project_ref: str | int | None = None,
+    input_path: str | Path | None = None,
+) -> tuple[Path | None, str]:
+    """
+    Copy a formatted output into its project's folder — drilling into a
+    matching sub-project sub-folder when one exists.
+
+    Independent of any QuoteVersion row, so archiving works even when the
+    user turned OFF "记录此次版本". Project resolution priority:
+      1. explicit `project_ref` (id or name)
+      2. infer from `input_path`'s filesystem location (work_dir layout)
+      3. infer from the input/​output filename's leading token
+
+    Returns `(dest_path_or_None, human_status_message)`. The message is
+    ready to surface in the UI report.
+    """
+    src = Path(output_path)
+    if not src.exists():
+        return None, "归档跳过:输出文件不存在"
+
     db = get_db()
     with db.session() as s:
-        qv = s.scalar(select(QuoteVersion).where(QuoteVersion.id == version_id))
-        if qv is None or qv.project_id is None:
-            logger.info("archive: version #%s has no project link", version_id)
-            return None
-
-        proj = s.get(Project, qv.project_id)
-        if proj is None:
-            logger.warning("archive: project id=%s not found", qv.project_id)
-            return None
-
-        src = Path(qv.output_file)
-        if not src.exists():
-            logger.warning("archive: output file gone: %s", src)
-            return None
+        proj: Project | None = None
+        ref = project_ref.strip() if isinstance(project_ref, str) else project_ref
+        if ref:
+            proj = _resolve_project(s, ref)
+            if proj is None:
+                return None, f"归档跳过:找不到指定项目 `{project_ref}`"
+        else:
+            if input_path is not None:
+                proj = infer_project_from_path(s, Path(input_path))
+            if proj is None:
+                fname = Path(input_path).name if input_path else src.name
+                proj = infer_project_from_filename(s, fname)
+            if proj is None:
+                return None, "归档跳过:没有关联到任何项目(打开自动关联或手动选项目即可)"
 
         proj_folder = Path(proj.folder_path)
         if not proj_folder.exists():
-            logger.warning("archive: project folder gone: %s", proj_folder)
-            return None
+            return None, f"归档跳过:项目文件夹不存在 `{proj_folder}`"
 
-        dest = proj_folder / src.name
-        # If a file with this name already exists AND it's a different
-        # file, timestamp-suffix the new one so prior versions survive.
-        if dest.exists() and dest.resolve() != src.resolve():
-            try:
-                same = (dest.stat().st_size == src.stat().st_size and
-                        dest.stat().st_mtime == src.stat().st_mtime)
-            except OSError:
-                same = False
-            if not same:
-                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                dest = proj_folder / f"{src.stem}_{stamp}{src.suffix}"
-
+        target_dir = _resolve_archive_dir(proj_folder, src.name)
+        dest = _safe_dest(target_dir, src)
         try:
             if dest.resolve() != src.resolve():
                 shutil.copy(src, dest)
-            qv.archived_path = str(dest.resolve())
-            return dest
         except Exception:                                             # noqa: BLE001
             logger.exception("archive copy failed: %s -> %s", src, dest)
-            return None
+            return None, "归档失败:复制文件出错(详见日志)"
+
+        drilled = target_dir.resolve() != proj_folder.resolve()
+        label = "子项目文件夹" if drilled else "项目文件夹"
+        return dest, f"已归档到{label}:`{dest}`"
+
+
+def archive_quote_to_project(version_id: int) -> Path | None:
+    """
+    Archive a recorded version's output into its linked project folder and
+    stamp the version's `archived_path`.
+
+    Thin wrapper over `archive_quote_file` (which does the drill-down). Kept
+    for callers that work in terms of version rows. Returns the destination
+    Path, or None on any skip.
+    """
+    summary = get_quote_version(version_id)
+    if summary is None or summary.project_id is None:
+        logger.info("archive: version #%s has no project link", version_id)
+        return None
+
+    dest, _msg = archive_quote_file(
+        summary.output_file,
+        project_ref=summary.project_id,
+        input_path=summary.source_file,
+    )
+    if dest is not None:
+        db = get_db()
+        with db.session() as s:
+            qv = s.scalar(select(QuoteVersion).where(QuoteVersion.id == version_id))
+            if qv is not None:
+                qv.archived_path = str(dest.resolve())
+    return dest
 
 
 __all__ = [
@@ -462,4 +600,5 @@ __all__ = [
     "delete_quote_version",
     "set_quote_version_project",
     "archive_quote_to_project",
+    "archive_quote_file",
 ]
