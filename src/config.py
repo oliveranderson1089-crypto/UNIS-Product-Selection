@@ -110,6 +110,8 @@ class Secrets:
     deepseek_api_key: str | None
     deepseek_base_url: str
     anthropic_api_key: str | None
+    # Local Ollama server (OpenAI-compatible). No key needed; only the URL.
+    ollama_base_url: str = "http://localhost:11434/v1"
 
 
 @dataclass
@@ -229,6 +231,7 @@ def _build(raw: dict[str, Any]) -> AppConfig:
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY") or None,
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
+        ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
     )
 
     p = raw.get("projects", {})

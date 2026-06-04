@@ -100,6 +100,12 @@ class LLMRouter:
                 )
             from .claude import ClaudeProvider
             return ClaudeProvider(api_key=secrets.anthropic_api_key)
+        if name == "ollama":
+            # Local Ollama server (OpenAI-compatible @ :11434). No API key, so
+            # this never raises ProviderNotConfigured — but the first call will
+            # fail clearly if the server is down or the model isn't pulled.
+            from .ollama import OllamaProvider
+            return OllamaProvider(base_url=secrets.ollama_base_url)
         raise ValueError(f"Unknown LLM provider: {name!r}")
 
     def _try_fallback(

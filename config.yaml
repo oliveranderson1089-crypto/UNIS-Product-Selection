@@ -11,8 +11,8 @@
 # without touching business code.
 llm:
   chat:
-    provider: deepseek
-    model: deepseek-chat
+    provider: ollama          # local Ollama @ :11434 (OpenAI-compatible); was deepseek/deepseek-chat
+    model: qwen2.5            # pulled tag (qwen2.5 -> qwen2.5:latest); must match `ollama list`
     temperature: 0.2
     max_tokens: 1024
 
