@@ -33,9 +33,10 @@ def app() -> None:
 
 def _register_subcommands() -> None:
     """Wire every subcommand into the top-level group. Single place to extend."""
-    from . import catalog, crawl, inspect_cmd, projects, quote, select, ui
+    from . import catalog, crawl, index, inspect_cmd, projects, quote, select, ui
     app.add_command(select.cmd)
     app.add_command(crawl.cmd)
+    app.add_command(index.cmd)
     app.add_command(inspect_cmd.cmd)
     app.add_command(catalog.cmd)
     app.add_command(projects.cmd)

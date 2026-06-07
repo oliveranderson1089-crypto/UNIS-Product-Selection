@@ -74,6 +74,22 @@ class LLMRouter:
             )
             return self._try_fallback(task, exc, messages, **kwargs)
 
+    def embed(self, task: str, texts: list[str], **kwargs) -> list[list[float]]:
+        """Embed `texts` with the provider+model configured for `task`.
+
+        No fallback: embedding dimensionality differs across models, so a
+        silent fallback would corrupt an index. Failures propagate so the
+        caller (e.g. AIMatcher) can degrade gracefully on its own terms.
+        """
+        task_cfg = self._config.task(task)
+        if task_cfg is None:
+            raise ProviderNotConfigured(
+                f"No LLM task configured for {task!r}. "
+                f"Add it under config.yaml -> llm.{task} to enable embeddings."
+            )
+        provider = self._provider(task_cfg.provider)
+        return provider.embed(texts, model=task_cfg.model, **kwargs)
+
     # ---- internals ----------------------------------------------------------
     def _provider(self, name: str) -> LLMProvider:
         if name not in self._providers:

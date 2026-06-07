@@ -30,6 +30,17 @@ llm:
     temperature: 0.2
     max_tokens: 1024
 
+  # Embedding model for semantic retrieval (Chroma vector index). Runs on the
+  # same local Ollama server as `chat`; pull it once with `ollama pull bge-m3`.
+  # bge-m3 is multilingual (strong on Chinese) and emits 1024-dim vectors.
+  # temperature/max_tokens are ignored by the embeddings endpoint but kept for
+  # a uniform LLMTaskConfig shape.
+  embedding:
+    provider: ollama
+    model: bge-m3
+    temperature: 0.0
+    max_tokens: 0
+
   # If a provider call fails, optionally fall back to another task.
   # null means no fallback. Used by LLMRouter.
   fallback:
@@ -92,6 +103,20 @@ selector:
   top_k: 5
   # When in AI mode, how many products to pass to the LLM as context
   ai_context_top_n: 20
+  # Semantic recall: in AI mode, vector-search Chroma (bge-m3 embeddings) and
+  # union those hits with the rule shortlist before the LLM rerank. This
+  # surfaces products that match in meaning but not in exact keywords/specs.
+  # Requires a built index: `python -m src.cli index build`. Falls back to the
+  # rule shortlist alone when the index is empty or Ollama is unreachable.
+  use_semantic: true
+  # How many candidates the vector search recalls.
+  semantic_top_n: 20
+  # Vector-store backend for the semantic index:
+  #   embedded — pure-Python numpy cosine store (default). Zero native deps;
+  #              works on this Windows box where chromadb's wheel crashes on add().
+  #   chroma   — Chroma PersistentClient (needs a working native wheel; use on
+  #              Linux, or Windows via a Docker/WSL Chroma server).
+  vector_backend: embedded
 
 # ---------- Quotes (报价单编辑) ----------
 quotes:
