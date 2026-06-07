@@ -102,11 +102,16 @@ quotes:
   # auto-picks them up — no config edit needed.
   bom_path: "data/References/IT产品BOM编码*.xlsx"
 
-  # Path to "R3800FT20 G3配置模板*.xlsx" (the 已选型 version) — used to
+  # Path to "R3800FT20 G3配置*.xlsx" (the 已选型 version) — used to
   # fill the R3800FT20 G3 server section with per-component breakdown.
   # Glob supported; files with "已选" in the name are preferred over the
-  # bare template skeleton.
-  r3800ft20_template_path: "data/References/R3800FT20 G3配置模板*.xlsx"
+  # bare template skeleton, then most-recent mtime wins.
+  # NOTE: pattern is "配置*" (not "配置模板*") on purpose, so per-project
+  # 已选型 exports like "R3800FT20 G3配置南充武警(已选型).xlsx" are also
+  # picked up — otherwise a fresh upload that drops the literal "模板"
+  # word would be classified as a FT20 模板 in the UI but silently never
+  # become the active file.
+  r3800ft20_template_path: "data/References/R3800FT20 G3配置*.xlsx"
 
 # ---------- Projects ----------
 # Project = one sales/pre-sales opportunity. The scanner walks
