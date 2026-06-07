@@ -81,6 +81,28 @@ class OllamaProvider(LLMProvider):
         # haven't verified.
         return False
 
+    def embed(
+        self,
+        texts: list[str],
+        *,
+        model: str,
+        **kwargs: Any,
+    ) -> list[list[float]]:
+        """Embed a batch of texts via Ollama's OpenAI-compatible endpoint.
+
+        Uses an embedding model (e.g. ``bge-m3``), which must be pulled
+        separately from the chat model: ``ollama pull bge-m3``. Returns one
+        vector per input, preserving order. Local model → no cost.
+        """
+        if not texts:
+            return []
+        client = self._lazy_client()
+        resp = client.embeddings.create(model=model, input=texts, **kwargs)
+        # OpenAI SDK guarantees data is returned in input order, but sort by
+        # index defensively in case a future server build reorders.
+        ordered = sorted(resp.data, key=lambda d: d.index)
+        return [list(d.embedding) for d in ordered]
+
     # ---- introspection ------------------------------------------------------
     def health_check(self) -> bool:
         """Cheap liveness ping: list local models.

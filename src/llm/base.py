@@ -75,6 +75,23 @@ class LLMProvider(ABC):
     @abstractmethod
     def supports_vision(self) -> bool: ...
 
+    def embed(
+        self,
+        texts: list[str],
+        *,
+        model: str,
+        **kwargs: Any,
+    ) -> list[list[float]]:
+        """Return one embedding vector per input text (same order).
+
+        Default: providers without an embeddings endpoint raise. Only
+        embedding-capable providers (e.g. Ollama bge-m3) override this.
+        """
+        raise NotImplementedError(
+            f"Provider {self.name!r} does not support embeddings. "
+            f"Configure an embedding-capable provider in config.yaml -> llm.embedding."
+        )
+
     # ---- introspection ------------------------------------------------------
     def health_check(self) -> bool:
         """

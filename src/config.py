@@ -42,6 +42,9 @@ class LLMConfig:
     chat: LLMTaskConfig
     reasoning: LLMTaskConfig
     vision: LLMTaskConfig
+    # Optional: embedding model for semantic retrieval (Chroma). None when the
+    # deploy has no `llm.embedding` block — semantic recall then disables itself.
+    embedding: LLMTaskConfig | None = None
     fallback: dict[str, str | None] = field(default_factory=dict)
     budget_cny_monthly: dict[str, float] = field(default_factory=dict)
 
@@ -73,6 +76,14 @@ class SelectorConfig:
     default_mode: str       # "rule" | "ai"
     top_k: int
     ai_context_top_n: int
+    # Semantic recall (Chroma + embedding model). When true, AI mode unions
+    # vector-recalled candidates with the rule shortlist before LLM rerank.
+    use_semantic: bool = True
+    # How many candidates the vector search recalls from Chroma.
+    semantic_top_n: int = 20
+    # Vector-store backend: "embedded" (numpy cosine, zero native deps — the
+    # default; works where chromadb's Windows wheel crashes) or "chroma".
+    vector_backend: str = "embedded"
 
 
 @dataclass
@@ -168,10 +179,12 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 
 def _build(raw: dict[str, Any]) -> AppConfig:
     llm_raw = raw["llm"]
+    embedding_raw = llm_raw.get("embedding")
     llm = LLMConfig(
         chat=LLMTaskConfig(**llm_raw["chat"]),
         reasoning=LLMTaskConfig(**llm_raw["reasoning"]),
         vision=LLMTaskConfig(**llm_raw["vision"]),
+        embedding=LLMTaskConfig(**embedding_raw) if embedding_raw else None,
         fallback=llm_raw.get("fallback", {}),
         budget_cny_monthly=llm_raw.get("budget_cny_monthly", {}),
     )
@@ -211,6 +224,9 @@ def _build(raw: dict[str, Any]) -> AppConfig:
         default_mode=sel.get("default_mode", "rule"),
         top_k=sel.get("top_k", 5),
         ai_context_top_n=sel.get("ai_context_top_n", 20),
+        use_semantic=bool(sel.get("use_semantic", True)),
+        semantic_top_n=sel.get("semantic_top_n", 20),
+        vector_backend=str(sel.get("vector_backend", "embedded")).strip().lower(),
     )
 
     sc = raw["scheduler"]
