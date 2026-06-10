@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # exists.
 _COLUMN_PATCHES = [
     ("quote_versions", "archived_path", "VARCHAR(1024)"),
+    ("products", "granularity", "VARCHAR(16)"),
 ]
 
 
@@ -111,6 +112,7 @@ class Database:
         self,
         *,
         section: str | None = None,
+        granularity: str | None = None,
         category: str | None = None,
         min_port_count: int | None = None,
         port_speed: str | None = None,
@@ -134,8 +136,12 @@ class Database:
         stmt = select(Product)
         if section:
             stmt = stmt.where(Product.section == section)
+        if granularity:
+            stmt = stmt.where(Product.granularity == granularity)
         if category:
-            stmt = stmt.where(Product.category == category)
+            # Tolerant containment so requirement vocab ("服务器") matches
+            # catalog categories like "服务器存储".
+            stmt = stmt.where(Product.category.contains(category))
         if min_port_count is not None:
             stmt = stmt.where(
                 (Product.port_count == None) | (Product.port_count >= min_port_count)  # noqa: E711

@@ -52,6 +52,83 @@ def _import(path: Path, name: str, extractor: str | None, notes: str | None) -> 
     _render_import_report(report)
 
 
+def _resolve_source(pattern: str | None) -> Path | None:
+    """Resolve a config path/glob to the newest matching file."""
+    import glob as _glob
+
+    if not pattern:
+        return None
+    matches = _glob.glob(pattern)
+    if not matches:
+        return None
+    return Path(max(matches, key=lambda p: Path(p).stat().st_mtime))
+
+
+@cmd.command("import-library",
+             help="导入『UNIS 全线产品选型库.xlsx』→ 系列级产品(创新/通用范围)。")
+@click.argument("path", required=False,
+                type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def _import_library(path: Path | None) -> None:
+    setup_logging()
+    from ..catalog_lists.selection_library import import_selection_library
+    from ..config import get_config
+
+    src = path or _resolve_source(get_config().selection_sources.series_library)
+    if src is None:
+        console.print("[red]未提供路径,且 config.yaml -> selection_sources.series_library 没有匹配到文件。[/red]")
+        raise SystemExit(1)
+
+    with console.status(f"导入选型库 {src.name} …"):
+        try:
+            rep = import_selection_library(src)
+        except Exception as exc:
+            console.print(f"[red]导入失败:[/red] {exc}")
+            raise SystemExit(1)
+
+    by_cat = ", ".join(f"{k}={v}" for k, v in sorted(rep.by_category.items()))
+    console.print(
+        f"[green]完成:[/green] {rep.series_total} 个系列(创新 {rep.by_section.get('innovation', 0)} / "
+        f"通用 {rep.by_section.get('general', 0)}),{rep.sheets} 张表。\n[dim]{by_cat}[/dim]"
+    )
+    console.print("[dim]提示:运行 `python -m src.cli index build` 重建语义索引。[/dim]")
+
+
+@cmd.command("import-xlsx",
+             help="导入 Excel 名录选型对照表(总览 sheet)→ 型号级产品 + 名录。")
+@click.argument("path", required=False,
+                type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--name", default=None, help="名录名称;缺省用 config 的 selection_sources.catalog_name")
+@click.option("--notes", default=None, help="备注(可选)")
+def _import_xlsx(path: Path | None, name: str | None, notes: str | None) -> None:
+    setup_logging()
+    from ..catalog_lists.excel_catalog import import_catalog_xlsx
+    from ..config import get_config
+
+    cfg = get_config()
+    src = path or _resolve_source(cfg.selection_sources.catalog_xlsx)
+    if src is None:
+        console.print("[red]未提供路径,且 config.yaml -> selection_sources.catalog_xlsx 没有匹配到文件。[/red]")
+        raise SystemExit(1)
+    cat_name = name or cfg.selection_sources.catalog_name
+    if not cat_name:
+        console.print("[red]未提供 --name,且 config 没有默认 catalog_name。[/red]")
+        raise SystemExit(1)
+
+    with console.status(f"导入名录 {src.name} …"):
+        try:
+            rep = import_catalog_xlsx(src, name=cat_name, notes=notes, replace=True)
+        except Exception as exc:
+            console.print(f"[red]导入失败:[/red] {exc}")
+            raise SystemExit(1)
+
+    by_cat = ", ".join(f"{k}={v}" for k, v in sorted(rep.by_category.items()))
+    console.print(
+        f"[green]完成:[/green] 名录 [cyan]{rep.catalog_name}[/cyan] 共 {rep.models_total} 个型号。\n"
+        f"[dim]{by_cat}[/dim]"
+    )
+    console.print("[dim]提示:运行 `python -m src.cli index build` 重建语义索引。[/dim]")
+
+
 @cmd.command("list", help="列出所有已导入的名录。")
 def _list() -> None:
     setup_logging()

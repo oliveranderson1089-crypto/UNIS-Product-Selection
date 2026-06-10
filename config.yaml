@@ -117,6 +117,22 @@ selector:
   #   chroma   — Chroma PersistentClient (needs a working native wheel; use on
   #              Linux, or Windows via a Docker/WSL Chroma server).
   vector_backend: embedded
+  # 创新/通用范围的选型粒度(分阶段计划):
+  #   series — Phase 1:返回全线选型库的产品系列(型号级还未整理)
+  #   model  — Phase 2:型号级表整理完成后切换
+  # 名录范围不受此开关影响,始终匹配到具体型号。
+  section_granularity: series
+
+# ---------- Selection sources(人工整理的权威选型表) ----------
+# 这两份 Excel 是非爬虫的权威选型数据源。支持 glob(取最新修改的文件)。
+# 导入命令:
+#   python -m src.cli catalog import-library          # 全线选型库 → 系列级产品
+#   python -m src.cli catalog import-xlsx             # 名录对照表 → 型号级产品+名录
+# 导入后记得重建语义索引:python -m src.cli index build
+selection_sources:
+  series_library: "D:/Work/紫光恒越/UNIS资料/5.辅助配置材料/常用/UNIS 全线产品选型库*.xlsx"
+  catalog_xlsx: "D:/Work/紫光恒越/UNIS资料/5.辅助配置材料/常用/*名录_产品选型对照表*.xlsx"
+  catalog_name: "紫光恒越2025年V1名录"
 
 # ---------- Quotes (报价单编辑) ----------
 quotes:

@@ -52,6 +52,20 @@ class RuleMatcher(Matcher):
 
     section: str | None = None
     catalog_name: str | None = None
+    # Row granularity this matcher sees: "series" | "model" | None(auto).
+    # Auto policy (phased plan): 名录 scope → "model" (名录已整理到型号);
+    # 创新/通用 scope → selector.section_granularity ("series" in Phase 1 —
+    # flip the config knob to "model" once 型号级 tables are curated).
+    granularity: str | None = None
+
+    def effective_granularity(self) -> str | None:
+        if self.granularity is not None:
+            return self.granularity or None          # explicit "" disables filtering
+        if self.catalog_name:
+            return "model"
+        from ..config import get_config              # local: avoid import cycles
+        g = getattr(get_config().selector, "section_granularity", "series")
+        return (g or "").strip().lower() or None
 
     def match(self, requirement: Requirement, *, top_k: int = 5) -> list[MatchResult]:
         candidates = self._prefilter(requirement)
@@ -67,6 +81,7 @@ class RuleMatcher(Matcher):
         return db.find_products(
             section=self.section,
             catalog_name=self.catalog_name,
+            granularity=self.effective_granularity(),
             category=req.category,
             min_port_count=req.port_count.min if req.port_count.is_set() else None,
             port_speed=req.port_speed.exact if req.port_speed.is_set() else None,
@@ -87,7 +102,9 @@ class RuleMatcher(Matcher):
         # Category — hard requirement when user specified one.
         if req.category:
             max_possible += FIELD_WEIGHTS["category"]
-            if p.category == req.category:
+            # Tolerant containment: requirement vocab ("服务器") should match
+            # catalog categories like "服务器存储"; exact equality still passes.
+            if p.category and (req.category in p.category or p.category in req.category):
                 score += FIELD_WEIGHTS["category"]
                 reasons.append(f"类别匹配:{p.category}")
             else:

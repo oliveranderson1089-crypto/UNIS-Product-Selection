@@ -84,6 +84,22 @@ class SelectorConfig:
     # Vector-store backend: "embedded" (numpy cosine, zero native deps — the
     # default; works where chromadb's Windows wheel crashes) or "chroma".
     vector_backend: str = "embedded"
+    # Granularity served to the 创新/通用 (section) scope: "series" (Phase 1 —
+    # the curated 全线选型库 series rows) or "model" (Phase 2, once 型号级 tables
+    # are curated). The 名录 scope is always model-level regardless of this knob.
+    section_granularity: str = "series"
+
+
+@dataclass
+class SelectionSourcesConfig:
+    """人工整理的权威选型表 (curated Excel sources for the selection catalog)."""
+
+    # Path or glob to "UNIS 全线产品选型库*.xlsx" (series-level, 创新/通用 scope).
+    series_library: str | None = None
+    # Path or glob to "*名录_产品选型对照表*.xlsx" (model-level, 名录 scope).
+    catalog_xlsx: str | None = None
+    # Default catalog name used by `catalog import-xlsx` when --name is omitted.
+    catalog_name: str | None = None
 
 
 @dataclass
@@ -136,6 +152,7 @@ class AppConfig:
     secrets: Secrets
     projects: ProjectsConfig
     quotes: QuotesConfig
+    selection_sources: SelectionSourcesConfig
 
     # --- convenience helpers --------------------------------------------------
     def task(self, name: str) -> LLMTaskConfig:
@@ -227,6 +244,7 @@ def _build(raw: dict[str, Any]) -> AppConfig:
         use_semantic=bool(sel.get("use_semantic", True)),
         semantic_top_n=sel.get("semantic_top_n", 20),
         vector_backend=str(sel.get("vector_backend", "embedded")).strip().lower(),
+        section_granularity=str(sel.get("section_granularity", "series")).strip().lower() or "series",
     )
 
     sc = raw["scheduler"]
@@ -273,6 +291,20 @@ def _build(raw: dict[str, Any]) -> AppConfig:
         ),
     )
 
+    ss = raw.get("selection_sources", {}) or {}
+
+    def _resolve_source_path(key: str) -> str | None:
+        v = ss.get(key)
+        if v and not Path(v).is_absolute():
+            v = str(PROJECT_ROOT / v)
+        return v
+
+    selection_sources_cfg = SelectionSourcesConfig(
+        series_library=_resolve_source_path("series_library"),
+        catalog_xlsx=_resolve_source_path("catalog_xlsx"),
+        catalog_name=ss.get("catalog_name"),
+    )
+
     return AppConfig(
         llm=llm,
         storage=storage,
@@ -283,6 +315,7 @@ def _build(raw: dict[str, Any]) -> AppConfig:
         secrets=secrets,
         projects=projects_cfg,
         quotes=quotes_cfg,
+        selection_sources=selection_sources_cfg,
     )
 
 
@@ -315,6 +348,7 @@ __all__ = [
     "StorageConfig",
     "CrawlerConfig",
     "SelectorConfig",
+    "SelectionSourcesConfig",
     "SchedulerConfig",
     "LoggingConfig",
     "Secrets",

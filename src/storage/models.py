@@ -59,6 +59,11 @@ class Product(Base):
     rack_units:               Mapped[int | None]   = mapped_column(Integer, nullable=True)
     is_domestic:              Mapped[bool | None]  = mapped_column(Boolean, nullable=True, index=True)
 
+    # Granularity of this row: "series" (创新/通用 选型库系列) | "model" (名录
+    # 具体型号) | None (legacy/crawled). Scopes semantic recall so a 创新/通用
+    # query returns 系列 and a 名录 query returns 型号.
+    granularity:  Mapped[str | None]   = mapped_column(String(16), nullable=True, index=True)
+
     # ---- compute/storage placeholders (used when category expands) ---------
     cpu_cores:    Mapped[int | None]   = mapped_column(Integer, nullable=True)
     memory_gb:    Mapped[int | None]   = mapped_column(Integer, nullable=True)

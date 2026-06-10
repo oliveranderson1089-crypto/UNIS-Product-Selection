@@ -123,6 +123,7 @@ def _metadata(p: Product) -> dict:
         "model": p.model or "",
         "section": p.section or "",
         "category": p.category or "",
+        "granularity": getattr(p, "granularity", None) or "",
         "is_domestic": bool(p.is_domestic) if p.is_domestic is not None else False,
     }
 
@@ -232,7 +233,9 @@ class _EmbeddedStore:
             encoding="utf-8",
         )
 
-    def search(self, qvec, n: int, section: str | None) -> list[SemanticHit]:
+    def search(
+        self, qvec, n: int, section: str | None, granularity: str | None = None,
+    ) -> list[SemanticHit]:
         import numpy as np
 
         self._ensure_loaded()
@@ -245,8 +248,16 @@ class _EmbeddedStore:
         q = q / qn
         sims = self._matrix @ q                              # cosine similarity
 
-        if section:
-            cand = [i for i, m in enumerate(self._metas) if (m or {}).get("section") == section]
+        def _keep(meta: dict | None) -> bool:
+            m = meta or {}
+            if section and m.get("section") != section:
+                return False
+            if granularity and m.get("granularity") != granularity:
+                return False
+            return True
+
+        if section or granularity:
+            cand = [i for i, m in enumerate(self._metas) if _keep(m)]
             if not cand:
                 return []
             cand_arr = np.asarray(cand, dtype=np.int64)
@@ -311,8 +322,15 @@ class _ChromaStore:
             ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas
         )
 
-    def search(self, qvec, n: int, section: str | None) -> list[SemanticHit]:
-        where = {"section": section} if section else None
+    def search(
+        self, qvec, n: int, section: str | None, granularity: str | None = None,
+    ) -> list[SemanticHit]:
+        conds: list[dict] = []
+        if section:
+            conds.append({"section": section})
+        if granularity:
+            conds.append({"granularity": granularity})
+        where = None if not conds else (conds[0] if len(conds) == 1 else {"$and": conds})
         res = self._coll().query(query_embeddings=[qvec], n_results=n, where=where)
         ids = (res.get("ids") or [[]])[0]
         dists = (res.get("distances") or [[]])[0]
@@ -387,11 +405,14 @@ class SemanticIndex:
         *,
         n: int = 20,
         section: str | None = None,
+        granularity: str | None = None,
         allowed_models: list[str] | set[str] | None = None,
     ) -> list[SemanticHit]:
         """Vector-search the index for products semantically close to `text`.
 
         section        — restrict to "innovation" | "general" via metadata filter.
+        granularity    — restrict to "series" | "model" rows (phased plan:
+                         创新/通用→series, 名录→model).
         allowed_models — post-filter to this model whitelist (used for 名录 scope);
                          we over-fetch then trim so the filter doesn't starve `n`.
 
@@ -418,7 +439,7 @@ class SemanticIndex:
         want = min(want, total)
 
         try:
-            hits = self._backend.search(qvec, want, section)
+            hits = self._backend.search(qvec, want, section, granularity)
         except Exception as exc:                            # noqa: BLE001
             logger.warning("SemanticIndex.query: search failed (%s)", exc)
             return []

@@ -148,6 +148,7 @@ class AIMatcher(Matcher):
                 query_text,
                 n=cfg.selector.semantic_top_n,
                 section=self.rule.section,
+                granularity=self.rule.effective_granularity(),
                 allowed_models=allowed,
             )
         except Exception as exc:                          # noqa: BLE001
