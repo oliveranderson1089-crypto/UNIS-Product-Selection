@@ -47,8 +47,9 @@ def build_app() -> gr.Blocks:
             section="innovation",
             show_catalog_picker=False,
             intro_md=(
-                "**创新型** = `Autonomous_Controllable` 系列(全部 100% 国产化)。"
-                "包含 5 个品类:交换机、路由器、安全、计算存储、大模型一体机。"
+                "**创新型** = 自主可控(-G)产品线,全部国产化。当前按 **产品系列** 推荐"
+                "(数据源:UNIS 全线产品选型库;型号级表整理完成后切换)。"
+                "品类:交换机、路由器、防火墙、服务器存储、大模型一体机。"
             ),
         )
 
@@ -58,9 +59,9 @@ def build_app() -> gr.Blocks:
             section="general",
             show_catalog_picker=False,
             intro_md=(
-                "**通用型** = `Commercial_Product` 系列(行业通用,可能含 OEM)。"
-                "包含 8 个品类:交换机、路由器、安全、计算存储、智能管理、"
-                "云计算、大数据、无线局域网。"
+                "**通用型** = 行业通用产品线。当前按 **产品系列** 推荐"
+                "(数据源:UNIS 全线产品选型库)。品类:交换机、路由器、防火墙、"
+                "服务器存储、智能管理、云计算、大数据、无线局域网。"
             ),
         )
 
@@ -70,8 +71,10 @@ def build_app() -> gr.Blocks:
             section=None,           # no section filter (use catalog instead)
             show_catalog_picker=True,
             intro_md=(
-                "**名录型** = 限定到某一份外部名录(政府采购清单等)内的产品。"
-                "在右上角下拉里选名录;先去「名录管理」标签导入一份。"
+                "**名录型** = 限定到某一份外部名录内的 **具体型号**"
+                "(如 2025年V1名录承诺函的 20 个承诺型号)。"
+                "在右上角下拉里选名录;先去「名录管理」标签导入"
+                "(支持 PDF 承诺函或 Excel 选型对照表)。"
             ),
         )
 

@@ -19,6 +19,8 @@ import gradio as gr
 from .helpers import (
     _references_dir,
     import_catalog_via_ui,
+    import_catalog_xlsx_ui,
+    import_series_library_ui,
     list_catalog_names,
     list_catalogs_summary,
     list_reference_pdfs,
@@ -31,9 +33,10 @@ from .helpers import (
 def build_catalog_tab():
     with gr.Tab("🏷️ 名录管理"):
         gr.Markdown(
-            "## 名录(政府采购清单 / 创新名录)管理\n\n"
-            "名录是一份外部权威清单(通常是 PDF 承诺函),里面的产品是你库内"
-            "产品的子集。导入后,可在「名录型选型」标签里用它做范围限制。"
+            "## 名录与选型数据源管理\n\n"
+            "**名录**是一份外部权威清单(PDF 承诺函或 Excel 选型对照表),"
+            "导入后可在「名录型选型」标签里用它做范围限制(匹配到具体型号)。\n"
+            "**全线选型库**(Excel)则是创新型/通用型选型的系列级数据源。"
         )
 
         # Summary at the top -----------------------------------------------
@@ -138,6 +141,48 @@ def build_catalog_tab():
             refresh_refs_btn.click(
                 fn=lambda: gr.update(choices=list_reference_pdfs()),
                 outputs=refs_pdf_pick,
+            )
+
+        # Excel selection sources -------------------------------------------
+        with gr.Accordion("📊 导入 Excel 选型数据源(选型库 / 名录对照表)", open=False):
+            gr.Markdown(
+                "两份人工整理的权威 Excel,是选型的核心数据源:\n\n"
+                "1. **UNIS 全线产品选型库**(系列级)→ 创新型 / 通用型选型\n"
+                "2. **名录选型对照表**(型号级,需含『总览』sheet)→ 名录型选型\n\n"
+                "不上传文件时,自动按 `config.yaml → selection_sources` 配置的路径"
+                "(支持 glob,取最新文件)。重复导入安全(按型号覆盖更新)。\n\n"
+                "> ⏭️ 导入后规则模式立即生效;**AI 模式的语义召回**需在命令行"
+                "重建索引:`python -m src.cli index build`。"
+            )
+            with gr.Row():
+                lib_file = gr.File(
+                    label="🅰️ 全线选型库 .xlsx(可选;缺省走 config)",
+                    file_types=[".xlsx"], type="filepath",
+                )
+                lib_btn = gr.Button("📥 导入选型库(系列级)", variant="primary")
+            lib_result = gr.Markdown()
+            lib_btn.click(fn=import_series_library_ui, inputs=lib_file, outputs=lib_result)
+
+            with gr.Row():
+                catx_file = gr.File(
+                    label="🅱️ 名录对照表 .xlsx(可选;缺省走 config)",
+                    file_types=[".xlsx"], type="filepath",
+                )
+                catx_name = gr.Textbox(
+                    label="名录名称",
+                    placeholder="缺省用 config 的 selection_sources.catalog_name",
+                )
+            catx_btn = gr.Button("📥 导入名录对照表(型号级)", variant="primary")
+            catx_result = gr.Markdown()
+
+            def _on_import_xlsx(file, name):
+                md = import_catalog_xlsx_ui(file, name)
+                return md, list_catalogs_summary()
+
+            catx_btn.click(
+                fn=_on_import_xlsx,
+                inputs=[catx_file, catx_name],
+                outputs=[catx_result, summary_md],
             )
 
         # View one catalog --------------------------------------------------

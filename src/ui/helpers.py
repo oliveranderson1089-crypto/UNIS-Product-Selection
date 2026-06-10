@@ -110,10 +110,11 @@ def _render_results(results: list[MatchResult], *, scope_label: str = "") -> str
             f"{header}\n\n"
             "**没有产品匹配该需求。** 可能原因:\n"
             "- 当前作用域内没有可用产品(检查 section / catalog 过滤)\n"
+            "- 选型数据源还没导入 —— 去「名录管理」标签导入 Excel 选型库 / 名录对照表\n"
             "- 需求约束太严格,试着去掉一两个再选\n"
         )
 
-    table_rows = ["| # | 型号 | 评分 | 类别 | 端口 | 层级 | 国产 |",
+    table_rows = ["| # | 型号 / 系列 | 评分 | 类别 | 端口 | 层级 | 国产 |",
                   "|---|---|---|---|---|---|---|"]
     for i, r in enumerate(results, 1):
         p = r.product
@@ -122,20 +123,33 @@ def _render_results(results: list[MatchResult], *, scope_label: str = "") -> str
             ports = f"{p.port_count}×{p.port_speed}"
         elif p.port_count:
             ports = f"{p.port_count}口"
+        gran = getattr(p, "granularity", None)
+        gran_tag = " <sub>系列</sub>" if gran == "series" else (
+            " <sub>型号</sub>" if gran == "model" else "")
         table_rows.append(
-            f"| {i} | **{p.model}** | {r.score:.0%} | "
+            f"| {i} | **{p.model}**{gran_tag} | {r.score:.0%} | "
             f"{p.category or '-'} | {ports} | {p.layer or '-'} | "
             f"{'✓' if p.is_domestic else ''} |"
         )
 
     details = []
     for i, r in enumerate(results, 1):
+        p = r.product
         bullets = "\n".join(f"  - ✓ {x}" for x in r.reasons)
         warns = "\n".join(f"  - ⚠ {x}" for x in r.warnings)
-        url_line = f"  - [产品页]({r.product.page_url})" if r.product.page_url else ""
+        # Series rows carry their value in the curated description
+        # ("定位 | 规格…") rather than structured spec columns — surface the
+        # positioning segment so the user sees WHAT the series is for.
+        desc_line = ""
+        if getattr(p, "granularity", None) == "series" and p.description:
+            positioning = p.description.split("|", 1)[0].strip()
+            if positioning:
+                desc_line = f"  - 📌 {positioning[:120]}"
+        url_line = f"  - [产品页]({p.page_url})" if p.page_url else ""
         details.append(
-            f"<details><summary>#{i}  <code>{r.product.model}</code>  &nbsp;评分 {r.score:.0%}</summary>\n\n"
+            f"<details><summary>#{i}  <code>{p.model}</code>  &nbsp;评分 {r.score:.0%}</summary>\n\n"
             + (bullets or "_(无理由)_")
+            + (("\n" + desc_line) if desc_line else "")
             + (("\n" + warns) if warns else "")
             + (("\n" + url_line) if url_line else "")
             + "\n</details>"
@@ -239,6 +253,84 @@ def import_catalog_via_ui(
         md.append("")
         md.append("> 抓取产品后,点击下面的 **重新匹配** 按钮自动重连。")
     return "\n".join(md)
+
+
+def _resolve_source_file(pattern: str | None) -> Path | None:
+    """Resolve a config path/glob to the newest matching file (mtime wins)."""
+    import glob as _glob
+
+    if not pattern:
+        return None
+    matches = _glob.glob(pattern)
+    if not matches:
+        return None
+    return Path(max(matches, key=lambda p: Path(p).stat().st_mtime))
+
+
+def import_series_library_ui(uploaded_path: str | None) -> str:
+    """Gradio callback: import the 全线产品选型库 (series-level, 创新/通用 scope).
+
+    Falls back to config.yaml → selection_sources.series_library (glob) when
+    nothing is uploaded.
+    """
+    from ..catalog_lists.selection_library import import_selection_library
+    from ..config import get_config
+
+    src = (Path(uploaded_path) if uploaded_path
+           else _resolve_source_file(get_config().selection_sources.series_library))
+    if src is None or not src.exists():
+        return ("❌ 未上传文件,且 config.yaml → selection_sources.series_library "
+                "没有匹配到文件。")
+    try:
+        rep = import_selection_library(src)
+    except Exception as exc:                                          # noqa: BLE001
+        logger.exception("import_selection_library failed")
+        return f"❌ **导入失败:** `{exc}`"
+
+    by_cat = ", ".join(f"{k} {v}" for k, v in sorted(rep.by_category.items()))
+    return (
+        f"✅ **选型库导入完成** — {rep.series_total} 个系列"
+        f"(创新 {rep.by_section.get('innovation', 0)} / 通用 {rep.by_section.get('general', 0)})\n\n"
+        f"- 来源: `{src.name}`\n"
+        f"- 品类: {by_cat}\n\n"
+        "> ⏭️ AI 模式的语义召回需要重建索引:命令行运行 "
+        "`python -m src.cli index build`(规则模式立即生效,无需重建)。"
+    )
+
+
+def import_catalog_xlsx_ui(uploaded_path: str | None, name: str | None) -> str:
+    """Gradio callback: import an Excel 名录选型对照表 (model-level + CatalogList).
+
+    Path falls back to selection_sources.catalog_xlsx, name falls back to
+    selection_sources.catalog_name.
+    """
+    from ..catalog_lists.excel_catalog import import_catalog_xlsx
+    from ..config import get_config
+
+    cfg = get_config()
+    src = (Path(uploaded_path) if uploaded_path
+           else _resolve_source_file(cfg.selection_sources.catalog_xlsx))
+    if src is None or not src.exists():
+        return ("❌ 未上传文件,且 config.yaml → selection_sources.catalog_xlsx "
+                "没有匹配到文件。")
+    cat_name = (name or "").strip() or cfg.selection_sources.catalog_name
+    if not cat_name:
+        return "❌ 请填写名录名称(或在 config 配置 selection_sources.catalog_name)。"
+
+    try:
+        rep = import_catalog_xlsx(src, name=cat_name, replace=True)
+    except Exception as exc:                                          # noqa: BLE001
+        logger.exception("import_catalog_xlsx failed")
+        return f"❌ **导入失败:** `{exc}`"
+
+    by_cat = ", ".join(f"{k} {v}" for k, v in sorted(rep.by_category.items()))
+    return (
+        f"✅ **名录导入完成** — [{rep.catalog_name}] 共 {rep.models_total} 个型号\n\n"
+        f"- 来源: `{src.name}`\n"
+        f"- 类别: {by_cat}\n\n"
+        "> 「名录型选型」页点 🔄 刷新名录 即可使用;AI 模式语义召回需重建索引:"
+        "`python -m src.cli index build`。"
+    )
 
 
 def show_catalog_md(name: str) -> str:
@@ -1135,6 +1227,8 @@ __all__ = [
     "list_catalog_names",
     "list_catalogs_summary",
     "import_catalog_via_ui",
+    "import_series_library_ui",
+    "import_catalog_xlsx_ui",
     "show_catalog_md",
     "rematch_all_ui",
     # quotes

@@ -74,7 +74,7 @@ def build_select_tab(
                 refresh_btn.click(fn=_refresh, outputs=catalog_dropdown)
 
         with gr.Row():
-            ai_toggle = gr.Checkbox(label="🤖 AI 模式 (DeepSeek 解析 + 重排,图片走 Claude)",
+            ai_toggle = gr.Checkbox(label="🤖 AI 模式(本地大模型解析 + 语义召回 + 智能重排;图片走 Claude)",
                                     value=False)
             top_k = gr.Slider(label="返回 Top N", minimum=1, maximum=15, step=1, value=5)
         run_btn = gr.Button("🚀 开始选型", variant="primary", size="lg")
